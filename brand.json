@@ -1,0 +1,26 @@
+{
+  "productName": "BeerFlow POS",
+  "company": "BeerFlow Technologies",
+  "tagline": "Restaurant & Cafe Management",
+  "city": "Karachi, Pakistan",
+  "support": {
+    "whatsapp": "+92 322 2301920",
+    "email": "beerflowtechnologies@gmail.com"
+  },
+  "colors": {
+    "background": "#0B0A18",
+    "accentFrom": "#4F46E5",
+    "accentTo": "#06B6D4"
+  },
+  "assets": {
+    "logoMark": "src/assets/logo-mark.png",
+    "logoHorizontalDark": "src/assets/logo-horizontal-dark.png",
+    "logoHorizontalLight": "src/assets/logo-horizontal-light.png",
+    "splash": "src/assets/splash.png",
+    "loginBackground": "src/assets/login-bg.jpg",
+    "aboutBanner": "src/assets/about-banner.png",
+    "receiptPoweredBy58": "receipt/receipt-powered-by-58mm.png",
+    "receiptPoweredBy80": "receipt/receipt-powered-by-80mm.png"
+  },
+  "showPoweredByOnReceipt": true
+}

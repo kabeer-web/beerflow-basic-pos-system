@@ -1,0 +1,420 @@
+import { uid } from "./money.ts";
+import type { AppState, Cart, Deal, DealSlot, Ingredient, Product, Recipe, Settings } from "./types.ts";
+
+export const STARTER_LOGINS = [
+  { username: "owner", password: "owner", displayName: "Owner", role: "owner" as const },
+  { username: "cashier", password: "cashier", displayName: "Cashier", role: "cashier" as const },
+];
+
+const PIZZA = "prod-pizza";
+
+function slot(
+  label: string,
+  mode: DealSlot["mode"],
+  extra: Partial<DealSlot> & { qty?: number },
+): DealSlot {
+  return {
+    id: uid(),
+    label,
+    mode,
+    productId: extra.productId ?? null,
+    choiceProductIds: extra.choiceProductIds ?? [],
+    sizeName: extra.sizeName ?? null,
+    flavourRequired: extra.flavourRequired ?? false,
+    qty: extra.qty ?? 1,
+  };
+}
+
+function pizza(label: string, sizeName: string, qty = 1): DealSlot {
+  return slot(label, "pizza", { productId: PIZZA, sizeName, flavourRequired: true, qty });
+}
+
+function fixed(label: string, productId: string, qty = 1): DealSlot {
+  return slot(label, "fixed", { productId, qty });
+}
+
+export function emptyCart(): Cart {
+  return {
+    lines: [],
+    channel: "takeaway",
+    tableNo: "",
+    customerId: null,
+    customerName: "",
+    phone: "",
+    address: "",
+    notes: "",
+    discountPaisa: 0,
+    deliveryChargePaisa: 0,
+    partyId: null,
+    idempotencyKey: "",
+  };
+}
+
+function settings(): Settings {
+  return {
+    shopName: "My Restaurant",
+    branch: "",
+    tagline: "Powered by BeerFlow POS",
+    address: "",
+    phones: [],
+    hours: "",
+    website: "",
+    currency: "PKR",
+    dateFormat: "dmy",
+    receiptWidth: "80",
+    receiptFooter: "Thank you for your order.",
+    logoImageId: null,
+    taxEnabled: false,
+    taxBps: 0,
+    blockNegativeStock: false,
+    paymentMethods: [
+      { id: "cash", label: "Cash", enabled: true },
+      { id: "card", label: "Card", enabled: true },
+      { id: "wallet", label: "Wallet", enabled: true },
+    ],
+    expenseCategories: ["Rent", "Utilities", "Wages", "Supplies", "Fuel", "Maintenance", "Other"],
+    openingCashPaisa: 0,
+    openingCashDate: "",
+    tagFrequentDays: 7,
+    tagFrequentMinDays: 3,
+    tagInactiveDays: 14,
+    tagVipSpendPaisa: 1_000_000,
+    tagVipVisits: 12,
+    tagNewDays: 14,
+  };
+}
+
+function flavours() {
+  return ["Tikka", "Fajita", "Tandoori", "Malai Boti", "Afghani Boti", "Creamy Mayo Pizza (Special)"].map(
+    (name) => ({ id: uid(), name, pricePaisa: 0 }),
+  );
+}
+
+function products(): Product[] {
+  const pizzaProduct: Product = {
+    id: PIZZA,
+    name: "Pizza",
+    description: "Choose a size and a flavour. Half-and-half is available.",
+    sku: "PZ-BASE",
+    categoryId: "cat-pizza",
+    type: "pizza",
+    imageId: null,
+    basePricePaisa: 30000,
+    costPricePaisa: null,
+    sizes: [
+      { id: "sz-s", name: "Small", pricePaisa: 30000 },
+      { id: "sz-r", name: "Regular", pricePaisa: 60000 },
+      { id: "sz-l", name: "Large", pricePaisa: 85000 },
+      { id: "sz-j", name: "Jumbo", pricePaisa: 120000 },
+    ],
+    flavours: flavours(),
+    halfAndHalf: true,
+    addons: [
+      { id: "add-cheese", name: "Extra cheese", pricePaisa: 0, ingredientId: "ing-cheese", extraQty: 50 },
+      { id: "add-topping", name: "Extra topping", pricePaisa: 0 },
+    ],
+    trackStock: false,
+    stockQty: 0,
+    minStock: 0,
+    active: true,
+    sort: 1,
+  };
+
+  const side = (
+    id: string,
+    name: string,
+    sku: string,
+    price: number,
+    sort: number,
+    description: string,
+  ): Product => ({
+    id,
+    name,
+    description,
+    sku,
+    categoryId: "cat-sides",
+    type: "side",
+    imageId: null,
+    basePricePaisa: price,
+    costPricePaisa: null,
+    sizes: [],
+    flavours: [],
+    halfAndHalf: false,
+    addons: [],
+    trackStock: false,
+    stockQty: 0,
+    minStock: 0,
+    active: true,
+    sort,
+  });
+
+  const drink = (id: string, name: string, sku: string, sort: number): Product => ({
+    id,
+    name,
+    description: "Included in deals. Set a selling price before selling it on its own.",
+    sku,
+    categoryId: "cat-drinks",
+    type: "drink",
+    imageId: null,
+    basePricePaisa: 0,
+    costPricePaisa: null,
+    sizes: [],
+    flavours: [],
+    halfAndHalf: false,
+    addons: [],
+    trackStock: false,
+    stockQty: 0,
+    minStock: 0,
+    active: true,
+    sort,
+  });
+
+  return [
+    pizzaProduct,
+    side("prod-pasta", "Pasta", "SD-PASTA", 60000, 1, "From the printed menu."),
+    side("prod-lasagna", "Lasagna", "SD-LAS", 60000, 2, "From the printed menu."),
+    side("prod-spaghetti", "Spaghetti", "SD-SPAG", 60000, 3, "From the printed menu."),
+    side("prod-fries-s", "Pizza Fries Small", "SD-FRS", 30000, 4, "From the printed menu."),
+    side("prod-fries-r", "Pizza Fries Regular", "SD-FRR", 50000, 5, "From the printed menu."),
+    drink("prod-drink-500", "Cold Drink 500 ml", "DR-500", 1),
+    drink("prod-drink-1", "Cold Drink 1 Litre", "DR-1L", 2),
+    drink("prod-drink-15", "Cold Drink 1.5 Litre", "DR-15", 3),
+  ];
+}
+
+function deals(): Deal[] {
+  const rows = [
+    {
+      id: "deal-01",
+      title: "Deal 01",
+      description: "2 small pizzas.",
+      pricePaisa: 50000,
+      compareAtPaisa: 60000,
+      slots: [pizza("Small pizza A", "Small"), pizza("Small pizza B", "Small")],
+      sort: 1,
+    },
+    {
+      id: "deal-02",
+      title: "Deal 02",
+      description: "2 regular pizzas.",
+      pricePaisa: 100000,
+      compareAtPaisa: 120000,
+      slots: [pizza("Regular pizza A", "Regular"), pizza("Regular pizza B", "Regular")],
+      sort: 2,
+    },
+    {
+      id: "deal-03",
+      title: "Deal 03",
+      description: "4 small pizzas.",
+      pricePaisa: 100000,
+      compareAtPaisa: 120000,
+      slots: [pizza("4 small pizzas", "Small", 4)],
+      sort: 3,
+    },
+    {
+      id: "deal-04",
+      title: "Deal 04",
+      description: "3 regular pizzas.",
+      pricePaisa: 140000,
+      compareAtPaisa: 180000,
+      slots: [pizza("3 regular pizzas", "Regular", 3)],
+      sort: 4,
+    },
+    {
+      id: "deal-05",
+      title: "Deal 05",
+      description: "1 pasta, 1 small pizza fries, 1 small pizza, 1 regular pizza, 500 ml cold drink.",
+      pricePaisa: 140000,
+      compareAtPaisa: null,
+      slots: [
+        fixed("Pasta", "prod-pasta"),
+        fixed("Pizza fries small", "prod-fries-s"),
+        pizza("Small pizza", "Small"),
+        pizza("Regular pizza", "Regular"),
+        fixed("500 ml cold drink", "prod-drink-500"),
+      ],
+      sort: 5,
+    },
+    {
+      id: "deal-06",
+      title: "Deal 06",
+      description: "2 regular pizzas, 1 pasta, 1 litre cold drink.",
+      pricePaisa: 150000,
+      compareAtPaisa: null,
+      slots: [pizza("2 regular pizzas", "Regular", 2), fixed("Pasta", "prod-pasta"), fixed("1 litre cold drink", "prod-drink-1")],
+      sort: 6,
+    },
+    {
+      id: "deal-07",
+      title: "Deal 07",
+      description: "2 large pizzas and a 1 litre cold drink.",
+      pricePaisa: 175000,
+      compareAtPaisa: null,
+      slots: [pizza("2 large pizzas", "Large", 2), fixed("1 litre cold drink", "prod-drink-1")],
+      sort: 7,
+    },
+    {
+      id: "deal-08",
+      title: "Deal 08",
+      description: "2 small pizzas, 2 regular pizzas, 2 small pizza fries.",
+      pricePaisa: 200000,
+      compareAtPaisa: null,
+      slots: [
+        pizza("2 small pizzas", "Small", 2),
+        pizza("2 regular pizzas", "Regular", 2),
+        fixed("2 pizza fries small", "prod-fries-s", 2),
+      ],
+      sort: 8,
+    },
+    {
+      id: "deal-09",
+      title: "Deal 09",
+      description: "2 large pizzas, 1 pasta, 1 pizza fries, 1.5 litre cold drink.",
+      pricePaisa: 230000,
+      compareAtPaisa: null,
+      slots: [
+        pizza("2 large pizzas", "Large", 2),
+        fixed("Pasta", "prod-pasta"),
+        fixed("Pizza fries small", "prod-fries-s"),
+        fixed("1.5 litre cold drink", "prod-drink-15"),
+      ],
+      sort: 9,
+    },
+    {
+      id: "deal-10",
+      title: "Deal 10",
+      description: "2 jumbo pizzas.",
+      pricePaisa: 220000,
+      compareAtPaisa: 240000,
+      slots: [pizza("Jumbo pizza A", "Jumbo"), pizza("Jumbo pizza B", "Jumbo")],
+      sort: 10,
+    },
+    {
+      id: "deal-11",
+      title: "Deal 11",
+      description: "3 large pizzas.",
+      pricePaisa: 225000,
+      compareAtPaisa: 255000,
+      slots: [pizza("3 large pizzas", "Large", 3)],
+      sort: 11,
+    },
+    {
+      id: "deal-12",
+      title: "Deal 12",
+      description: "1 small, 1 regular, 1 large, and 1 jumbo pizza.",
+      pricePaisa: 250000,
+      compareAtPaisa: 295000,
+      slots: [
+        pizza("Small pizza", "Small"),
+        pizza("Regular pizza", "Regular"),
+        pizza("Large pizza", "Large"),
+        pizza("Jumbo pizza", "Jumbo"),
+      ],
+      sort: 12,
+    },
+    {
+      id: "deal-13",
+      title: "Deal 13",
+      description: "1 small, 1 regular, and 1 large pizza. Listed on the shop website.",
+      pricePaisa: 150000,
+      compareAtPaisa: 175000,
+      slots: [pizza("Small pizza", "Small"), pizza("Regular pizza", "Regular"), pizza("Large pizza", "Large")],
+      sort: 13,
+    },
+  ];
+
+  return rows.map((row) => ({
+    ...row,
+    imageId: null,
+    active: true,
+    validFrom: null,
+    validTo: null,
+    notes: "Sample menu for first run. Edit or replace items for your restaurant. Flavour upcharges, if set, add on top.",
+  }));
+}
+
+function ingredients(): Ingredient[] {
+  const rows: Array<[string, string, Ingredient["kind"], string]> = [
+    ["ing-dough", "Dough ball", "ingredient", "pcs"],
+    ["ing-cheese", "Mozzarella Cheese", "ingredient", "g"],
+    ["ing-sauce", "Pizza sauce", "ingredient", "g"],
+    ["ing-chicken", "Chicken", "ingredient", "g"],
+    ["ing-olives", "Olives", "ingredient", "g"],
+    ["ing-mushrooms", "Mushrooms", "ingredient", "g"],
+    ["ing-capsicum", "Capsicum", "ingredient", "g"],
+    ["ing-onion", "Onion", "ingredient", "g"],
+    ["ing-jalapenos", "Jalapenos", "ingredient", "g"],
+    ["ing-flour", "Flour", "ingredient", "g"],
+    ["ing-fries", "Fries", "ingredient", "g"],
+    ["ing-pasta", "Pasta", "ingredient", "g"],
+    ["ing-box-s", "Box small", "packaging", "pcs"],
+    ["ing-box-r", "Box regular", "packaging", "pcs"],
+    ["ing-box-l", "Box large", "packaging", "pcs"],
+    ["ing-box-j", "Box jumbo", "packaging", "pcs"],
+  ];
+  return rows.map(([id, name, kind, unit]) => ({
+    id,
+    name,
+    unit,
+    kind,
+    stockQty: 0,
+    avgCostPaisa: 0,
+    minQty: 0,
+    active: true,
+  }));
+}
+
+
+function recipes(): Recipe[] {
+  // Owner can edit these anytime. Quantities are in the ingredient unit (g / pcs).
+  const sizes: Array<[string, number, number, number, number]> = [
+    // sizeName, cheese g, chicken g, sauce g, dough pcs
+    ["Small", 100, 80, 40, 1],
+    ["Regular", 150, 110, 50, 1],
+    ["Large", 250, 180, 80, 1],
+    ["Jumbo", 350, 230, 100, 1],
+  ];
+  return sizes.map(([sizeName, cheese, chicken, sauce, dough]) => ({
+    id: `rec-pizza-${sizeName.toLowerCase()}`,
+    productId: PIZZA,
+    dealId: null,
+    sizeName,
+    lines: [
+      { ingredientId: "ing-cheese", qty: cheese },
+      { ingredientId: "ing-chicken", qty: chicken },
+      { ingredientId: "ing-sauce", qty: sauce },
+      { ingredientId: "ing-dough", qty: dough },
+    ],
+    active: true,
+    note: `Default ${sizeName} pizza recipe — edit in Inventory.`,
+  }));
+}
+
+/** Starter till. Menu prices are from the shop card and website, not sample fiction. Stock starts at zero until the owner counts it. */
+export function createSeedState(now = new Date().toISOString()): AppState {
+  return {
+    meta: { version: 1, nextOrder: 1001, createdAt: now },
+    settings: settings(),
+    staff: [],
+    categories: [
+      { id: "cat-deals", name: "Deals", kind: "deals", sort: 1, active: true },
+      { id: "cat-pizza", name: "Pizza", kind: "pizza", sort: 2, active: true },
+      { id: "cat-drinks", name: "Drinks", kind: "drinks", sort: 3, active: true },
+      { id: "cat-sides", name: "Sides", kind: "sides", sort: 4, active: true },
+      { id: "cat-extras", name: "Extras", kind: "extras", sort: 5, active: true },
+    ],
+    products: products(),
+    deals: deals(),
+    customers: [],
+    parties: [],
+    ledger: [],
+    orders: [],
+    expenses: [],
+    ingredients: ingredients(),
+    recipes: recipes(),
+    stockMovements: [],
+    audit: [],
+    closedDays: [],
+    cart: emptyCart(),
+  };
+}

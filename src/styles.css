@@ -1,0 +1,317 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #08071A;
+  --color-surface: #12112A;
+  --color-surface-2: #1A1838;
+  --color-fg: #F4F3FA;
+  --color-muted: #8B87A8;
+  --color-primary: #6366F1;
+  --color-primary-fg: #EEF2FF;
+  --color-accent: #22D3EE;
+  --color-accent-fg: #083344;
+  --color-success: #34D399;
+  --color-success-fg: #022C22;
+  --color-danger: #F87171;
+  --color-border: #2A2755;
+  --font-sans: "Inter", "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--color-primary) 45%, transparent);
+  }
+}
+
+.tablecloth {
+  height: 3px;
+  background: linear-gradient(90deg, #6366F1, #22D3EE, #6366F1);
+}
+
+.login-shell {
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse 80% 60% at 15% 0%, rgba(99, 102, 241, 0.28), transparent 55%),
+    radial-gradient(ellipse 60% 45% at 100% 100%, rgba(34, 211, 238, 0.12), transparent 50%),
+    var(--color-bg);
+}
+
+.nav-item {
+  display: flex;
+  min-height: 2.75rem;
+  width: 100%;
+  align-items: center;
+  gap: 0.65rem;
+  border-radius: 0.85rem;
+  padding: 0 0.85rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-fg);
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.nav-item:hover { background: var(--color-surface-2); }
+.nav-item.is-active {
+  background: linear-gradient(110deg, #6366F1, #4F46E5);
+  color: #EEF2FF;
+  box-shadow: 0 8px 20px -10px rgba(99, 102, 241, 0.7);
+}
+
+.card {
+  border-radius: 1.15rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: 0 8px 32px -12px rgba(0, 0, 0, 0.55);
+}
+
+.receipt-paper {
+  background: #fffef9;
+  color: #1a1404;
+}
+.receipt-paper .ink-muted {
+  color: #5c5346;
+}
+.print-58 { width: 58mm; }
+.print-80 { width: 80mm; }
+.print-a4 { width: 180mm; max-width: 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@media print {
+  body * { visibility: hidden; }
+  .print-area,
+  .print-area * { visibility: visible; }
+  .print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    background: white;
+    color: #1a1404;
+  }
+}
+
+/* ───────── BeerFlow installer / uninstaller ───────── */
+.bf-stage {
+  --bf-a: #6366f1;
+  --bf-b: #22d3ee;
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  background: #070a14;
+  color: #e8ecf8;
+  isolation: isolate;
+}
+.bf-stage[data-tone="danger"] {
+  --bf-a: #f97316;
+  --bf-b: #ef4444;
+}
+.bf-grid {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse at 50% 40%, #000 20%, transparent 75%);
+}
+.bf-blob {
+  position: absolute;
+  z-index: -2;
+  width: 38rem;
+  height: 38rem;
+  border-radius: 9999px;
+  filter: blur(90px);
+  opacity: 0.35;
+  animation: bf-drift 18s ease-in-out infinite alternate;
+}
+.bf-blob.one { top: -12rem; left: -10rem; background: var(--bf-a); }
+.bf-blob.two { bottom: -14rem; right: -8rem; background: var(--bf-b); animation-delay: -7s; }
+.bf-card {
+  background: rgba(14, 19, 36, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1.25rem;
+  backdrop-filter: blur(18px);
+  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.bf-gradient-text {
+  background-image: linear-gradient(90deg, var(--bf-a), var(--bf-b));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.bf-input {
+  min-height: 2.9rem;
+  width: 100%;
+  border-radius: 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0 0.9rem;
+  color: #f1f4ff;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+}
+.bf-input:focus {
+  outline: none;
+  border-color: var(--bf-b);
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--bf-b) 22%, transparent);
+}
+.bf-btn {
+  display: inline-flex;
+  min-height: 2.9rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.85rem;
+  border: 0;
+  padding: 0 1.4rem;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  background-image: linear-gradient(110deg, var(--bf-a), var(--bf-b));
+  box-shadow: 0 10px 30px -10px var(--bf-a);
+  transition: transform 0.18s, box-shadow 0.18s, opacity 0.18s, filter 0.18s;
+}
+.bf-btn:hover:not(:disabled) { transform: translateY(-2px); filter: brightness(1.1); box-shadow: 0 16px 36px -12px var(--bf-b); }
+.bf-btn:active:not(:disabled) { transform: translateY(0); }
+.bf-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.bf-btn-ghost {
+  display: inline-flex;
+  min-height: 2.9rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.85rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: transparent;
+  padding: 0 1.2rem;
+  color: #cdd5ee;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s;
+}
+.bf-btn-ghost:hover { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.28); }
+.bf-rise { animation: bf-rise 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; animation-delay: var(--d, 0s); }
+.bf-pop { animation: bf-pop 0.6s cubic-bezier(0.3, 1.5, 0.5, 1) both; animation-delay: var(--d, 0s); }
+.bf-slide { animation: bf-slide 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.bf-logo-ring {
+  position: absolute;
+  inset: -10px;
+  border-radius: 9999px;
+  background: conic-gradient(from 0deg, var(--bf-a), var(--bf-b), transparent 62%, var(--bf-a));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  animation: bf-spin 3.2s linear infinite;
+}
+.bf-logo-glow { animation: bf-glow 3s ease-in-out infinite; }
+.bf-progress {
+  position: relative;
+  height: 0.6rem;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.bf-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background-image: linear-gradient(90deg, var(--bf-a), var(--bf-b));
+  transition: width 0.4s ease-out;
+}
+.bf-progress > span::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 30%, rgba(255, 255, 255, 0.55) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: bf-shimmer 1.4s linear infinite;
+}
+.bf-check-circle { stroke-dasharray: 190; stroke-dashoffset: 190; animation: bf-draw 0.8s ease-out 0.1s forwards; }
+.bf-check-mark { stroke-dasharray: 48; stroke-dashoffset: 48; animation: bf-draw 0.5s ease-out 0.75s forwards; }
+.bf-spark {
+  position: absolute;
+  bottom: -10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: linear-gradient(var(--bf-a), var(--bf-b));
+  opacity: 0;
+  animation: bf-float 6s ease-in infinite;
+  animation-delay: var(--d, 0s);
+}
+.bf-fade-away { animation: bf-away 2.4s ease-in-out 0.4s both; }
+.bf-spinner {
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 9999px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--bf-b);
+  animation: bf-spin 0.8s linear infinite;
+}
+
+@keyframes bf-drift { to { transform: translate(7rem, 5rem) scale(1.15); } }
+@keyframes bf-rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+@keyframes bf-pop { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: none; } }
+@keyframes bf-slide { from { opacity: 0; transform: translateX(26px); } to { opacity: 1; transform: none; } }
+@keyframes bf-spin { to { transform: rotate(360deg); } }
+@keyframes bf-glow {
+  0%, 100% { box-shadow: 0 0 30px -4px color-mix(in srgb, var(--bf-a) 60%, transparent), 0 0 60px -10px color-mix(in srgb, var(--bf-b) 40%, transparent); }
+  50% { box-shadow: 0 0 46px 2px color-mix(in srgb, var(--bf-a) 80%, transparent), 0 0 90px -4px color-mix(in srgb, var(--bf-b) 60%, transparent); }
+}
+@keyframes bf-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes bf-draw { to { stroke-dashoffset: 0; } }
+@keyframes bf-float {
+  0% { opacity: 0; transform: translateY(0) scale(0.6); }
+  15% { opacity: 0.9; }
+  100% { opacity: 0; transform: translateY(-90vh) translateX(var(--x, 0)) scale(1.2); }
+}
+@keyframes bf-away {
+  0% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0.6; transform: scale(0.96); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bf-blob, .bf-logo-ring, .bf-logo-glow, .bf-spark, .bf-progress > span::after, .bf-spinner { animation: none; }
+  .bf-rise, .bf-pop, .bf-slide, .bf-fade-away { animation-duration: 0.01s; animation-delay: 0s; }
+  .bf-check-circle, .bf-check-mark { animation-duration: 0.01s; animation-delay: 0s; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bf-check-circle, .bf-check-mark { stroke-dashoffset: 0; }
+}
