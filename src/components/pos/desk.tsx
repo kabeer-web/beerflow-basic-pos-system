@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { formatDay, formatPkr, formatWhen, localDate, rupeesToPaisa } from "@/lib/pos/money";
-import { orderDue, orderPaid, summarize } from "@/lib/pos/logic";
+import { isVipCustomer, orderDue, orderPaid, summarize } from "@/lib/pos/logic";
 import { usePos } from "@/lib/pos/store";
 import type { Order, PayMethod } from "@/lib/pos/types";
 import { act, Button, controlClass, Empty, Field, Stat } from "@/components/pos/ui";
@@ -69,7 +69,7 @@ export function DashboardScreen({ onOpen }: { onOpen: (page: "orders" | "invento
                   <span className="block font-semibold">{order.number}</span>
                   <span className="text-xs text-muted">
                     {order.status === "cancelled" ? "Cancelled" : order.channel}
-                    {order.customerName ? ` · ${order.customerName}` : ""}
+                    {order.customerName ? ` · ${order.customerName}${order.customerId && isVipCustomer(state, order.customerId) ? " 👑 VIP" : ""}` : ""}
                   </span>
                 </span>
                 <span className="font-semibold">{formatPkr(order.totalPaisa)}</span>
@@ -141,7 +141,12 @@ export function OrdersScreen({ onPrint }: { onPrint: (order: Order) => void }) {
                 <tr key={item.id} className="cursor-pointer border-t border-border" onClick={() => setSelected(item.id)}>
                   <td className="p-3 font-semibold">{item.number}</td>
                   <td className="p-3">{formatWhen(item.createdAt, state.settings.dateFormat)}</td>
-                  <td className="p-3">{item.customerName || "Walk-in"}</td>
+                  <td className="p-3">
+                    <span className="inline-flex items-center gap-1.5">
+                      {item.customerName || "Walk-in"}
+                      {item.customerId && isVipCustomer(state, item.customerId) ? <span className="vip-badge" title="VIP">👑</span> : null}
+                    </span>
+                  </td>
                   <td className="p-3">{formatPkr(item.totalPaisa)}</td>
                   <td className="p-3">{item.status === "cancelled" ? "Cancelled" : orderDue(item) > 0 ? "Balance due" : "Paid"}</td>
                 </tr>

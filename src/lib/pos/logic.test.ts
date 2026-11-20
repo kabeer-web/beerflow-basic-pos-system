@@ -1,9 +1,36 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { archiveParty, cartTotals, cancelOrder, checkout, closeDay, convertToIngredientUnit, customerStats, partyBalance, postLedger, postStock, removeIngredient, removeProduct, restoreParty, saveExpense, saveParty, saveProduct, summarize } from "./logic.ts";
-import { formatPkr, localDate, rupeesToPaisa } from "./money.ts";
+import {
+  archiveParty,
+  cartTotals,
+  cancelOrder,
+  checkout,
+  closeDay,
+  convertToIngredientUnit,
+  customerStats,
+  findCustomerByIdentity,
+  isVipCustomer,
+  normalizeName,
+  normalizePhone,
+  partyBalance,
+  postLedger,
+  postStock,
+  previewProduction,
+  produceBatch,
+  removeIngredient,
+  removeProduct,
+  restoreParty,
+  reverseProductionBatch,
+  saveExpense,
+  saveIngredient,
+  saveParty,
+  saveProduct,
+  summarize,
+  VIP_ORDER_THRESHOLD,
+} from "./logic.ts";
+import { businessDate, formatPkr, formatUnitCost, localDate, rupeesToPaisa } from "./money.ts";
 import { hashPassword, verifyPassword } from "./password.ts";
-import { createSeedState } from "./seed.ts";
+import { createInstallState, createSeedState } from "./seed.ts";
 import type { AppState, CartLine, LinePick } from "./types.ts";
 
 function dealLine(state: AppState, dealId: string, flavour = "Tikka"): CartLine {
@@ -427,9 +454,9 @@ test("new product can be edited without touching another record", () => {
 });
 
 test("passwords are not stored as plain text", async () => {
-  const hash = await hashPassword("owner");
-  assert.equal(hash.includes("owner"), false);
-  assert.equal(await verifyPassword("owner", hash), true);
+  const hash = await hashPassword("baldia");
+  assert.equal(hash.includes("baldia"), false);
+  assert.equal(await verifyPassword("baldia", hash), true);
   assert.equal(await verifyPassword("counter", hash), false);
 });
 
@@ -720,7 +747,7 @@ test("delivery charge is added once to total and stored on the order", () => {
     ...state.cart,
     channel: "delivery",
     phone: "03001234567",
-    address: "Karachi",
+    address: "Baldia",
     deliveryChargePaisa: 100_00,
     lines: [pizzaLine("Large", ["Tikka"])],
     idempotencyKey: "del-1",
@@ -767,4 +794,650 @@ test("archive party keeps history and blocks non-zero balance without force", ()
   assert.equal(restored.ok, true);
   if (!restored.ok) return;
   assert.equal(restored.state.parties.find((p) => p.id === partyId)!.active, true);
+});
+
+// ─── Business day (5 AM Asia/Karachi) ───────────────────────────────────────
+
+test("business day stays on previous day until 5 AM Karachi", () => {
+  // Karachi = UTC+5
+  // 2026-11-18 23:59 PKT = 2026-11-18 18:59 UTC → business day 2026-11-18
+  assert.equal(businessDate("2026-11-18T18:59:00.000Z"), "2026-11-18");
+  // 00:00 PKT
+  assert.equal(businessDate("2026-11-18T19:00:00.000Z"), "2026-11-18");
+  // 02:00 PKT
+  assert.equal(businessDate("2026-11-18T21:00:00.000Z"), "2026-11-18");
+  // 04:59 PKT
+  assert.equal(businessDate("2026-11-18T23:59:00.000Z"), "2026-11-18");
+  // 05:00 PKT → new business day
+  assert.equal(businessDate("2026-11-19T00:00:00.000Z"), "2026-11-19");
+  // 10:00 PKT
+  assert.equal(businessDate("2026-11-19T05:00:00.000Z"), "2026-11-19");
+});
+
+test("orders between midnight and 5 AM stay on previous business day in summarize", () => {
+  let state = createSeedState();
+  const line = pizzaLine("Regular", ["Tikka"]);
+  // Place an order at 2 AM Karachi on Nov 19 (= Nov 18 business day)
+  const at2am = "2026-11-18T21:00:00.000Z";
+  const sold = sell(state, line, undefined, at2am);
+  assert.equal(sold.ok, true);
+  if (!sold.ok) return;
+  state = sold.state;
+  // Calendar day of the timestamp is 2026-11-18 UTC, but business day is 2026-11-18
+  const biz = businessDate(at2am);
+  assert.equal(biz, "2026-11-18");
+  const summaryPrev = summarize(state, { from: "2026-11-18", to: "2026-11-18" });
+  assert.equal(summaryPrev.orderCount, 1);
+  assert.ok(summaryPrev.salesPaisa > 0);
+  // New business day (Nov 19) should have zero
+  const summaryNew = summarize(state, { from: "2026-11-19", to: "2026-11-19" });
+  assert.equal(summaryNew.orderCount, 0);
+  assert.equal(summaryNew.salesPaisa, 0);
+});
+
+test("closeDay on business date does not wipe historical orders", () => {
+  let state = createSeedState();
+  const line = pizzaLine("Regular", ["Tikka"]);
+  const at = "2026-11-18T10:00:00.000Z"; // afternoon PKT
+  const sold = sell(state, line, undefined, at);
+  assert.equal(sold.ok, true);
+  if (!sold.ok) return;
+  state = sold.state;
+  const day = businessDate(at);
+  const closed = closeDay(state, {
+    date: day,
+    actualCashPaisa: 0,
+    notes: "test close",
+    actorId: "owner",
+    actorName: "Owner",
+  });
+  assert.equal(closed.ok, true);
+  if (!closed.ok) return;
+  state = closed.state;
+  assert.equal(state.orders.length, 1);
+  assert.equal(state.orders[0]!.status, "completed");
+  const summary = summarize(state, { from: day, to: day });
+  assert.equal(summary.orderCount, 1);
+});
+
+// ─── Customer identity & VIP ────────────────────────────────────────────────
+
+test("normalizePhone handles Pakistani formats", () => {
+  assert.equal(normalizePhone("0300-1234567"), "03001234567");
+  assert.equal(normalizePhone("+92 300 1234567"), "03001234567");
+  assert.equal(normalizePhone("00923001234567"), "03001234567");
+  assert.equal(normalizePhone("923001234567"), "03001234567");
+  assert.equal(normalizePhone(""), "");
+});
+
+test("findCustomerByIdentity requires both name and phone", () => {
+  const customers = [
+    { id: "c1", name: "Ali Khan", phone: "03001234567", address: "", notes: "", manualTags: [], partyId: null, createdAt: "" },
+    { id: "c2", name: "Sara Ahmed", phone: "03001234567", address: "", notes: "", manualTags: [], partyId: null, createdAt: "" },
+    { id: "c3", name: "Ali Khan", phone: "03111234567", address: "", notes: "", manualTags: [], partyId: null, createdAt: "" },
+  ];
+  // Same name + same phone
+  assert.equal(findCustomerByIdentity(customers, "Ali Khan", "0300-1234567")?.id, "c1");
+  // Same phone, different name → no match
+  assert.equal(findCustomerByIdentity(customers, "Someone Else", "03001234567"), undefined);
+  // Same name, different phone → no match
+  assert.equal(findCustomerByIdentity(customers, "Ali Khan", "03119999999"), undefined);
+  // Different phone format still matches
+  assert.equal(findCustomerByIdentity(customers, "ali  khan", "+923001234567")?.id, "c1");
+});
+
+test("VIP after exactly 4 completed orders; cancelled do not count", () => {
+  let state = createSeedState();
+  const customerId = "cust-vip-test";
+  state.customers.push({
+    id: customerId,
+    name: "VIP Candidate",
+    phone: "03009998877",
+    address: "",
+    notes: "",
+    manualTags: [],
+    partyId: null,
+    createdAt: new Date().toISOString(),
+  });
+  assert.equal(isVipCustomer(state, customerId), false);
+
+  for (let i = 0; i < 3; i++) {
+    state.cart.lines = [pizzaLine("Regular", ["Tikka"])];
+    state.cart.idempotencyKey = crypto.randomUUID();
+    state.cart.customerId = customerId;
+    state.cart.customerName = "VIP Candidate";
+    state.cart.phone = "03009998877";
+    const totals = cartTotals(state);
+    const result = checkout(state, {
+      actorId: "owner",
+      actorName: "Owner",
+      tenders: [{ method: "cash", tenderedPaisa: totals.totalPaisa }],
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    state = result.state;
+  }
+  assert.equal(isVipCustomer(state, customerId), false); // 3 orders
+
+  // 4th completed
+  state.cart.lines = [pizzaLine("Regular", ["Tikka"])];
+  state.cart.idempotencyKey = crypto.randomUUID();
+  state.cart.customerId = customerId;
+  state.cart.customerName = "VIP Candidate";
+  state.cart.phone = "03009998877";
+  const totals4 = cartTotals(state);
+  const fourth = checkout(state, {
+    actorId: "owner",
+    actorName: "Owner",
+    tenders: [{ method: "cash", tenderedPaisa: totals4.totalPaisa }],
+  });
+  assert.equal(fourth.ok, true);
+  if (!fourth.ok) return;
+  state = fourth.state;
+  assert.equal(isVipCustomer(state, customerId), true);
+  assert.ok(VIP_ORDER_THRESHOLD === 4);
+
+  // Cancel one → drop below threshold
+  const orderId = state.orders.filter((o) => o.customerId === customerId).at(-1)!.id;
+  const cancelled = cancelOrder(state, orderId, "test cancel", "Owner");
+  assert.equal(cancelled.ok, true);
+  if (!cancelled.ok) return;
+  state = cancelled.state;
+  assert.equal(isVipCustomer(state, customerId), false);
+});
+
+// ─── Weighted average costing ───────────────────────────────────────────────
+
+test("weighted average after two purchases matches expected value", () => {
+  let state = createSeedState();
+  // Purchase 1: 10 kg cheese @ Rs 200/kg = 20000 paisa/kg, total 200000
+  // Seed may already have cheese; reset stock/cost for clean math
+  const cheese = state.ingredients.find((i) => i.id === "ing-cheese")!;
+  cheese.stockQty = 0;
+  cheese.avgCostPaisa = 0;
+
+  const p1 = postStock(state, {
+    ingredientId: "ing-cheese",
+    type: "purchase",
+    qty: 10,
+    unitCostPaisa: 20000,
+    reason: "Purchase 1",
+    partyId: null,
+    method: "cash",
+    day: localDate(),
+    adjustmentIn: true,
+  }, "Owner");
+  assert.equal(p1.ok, true);
+  if (!p1.ok) return;
+  state = p1.state;
+  assert.equal(state.ingredients.find((i) => i.id === "ing-cheese")!.stockQty, 10);
+  assert.equal(state.ingredients.find((i) => i.id === "ing-cheese")!.avgCostPaisa, 20000);
+
+  // Purchase 2: 5 kg @ Rs 240/kg = 24000 paisa/kg, total 120000
+  // Expected: qty 15, value 200000+120000=320000, avg = 320000/15 ≈ 21333.333 → 21333
+  const p2 = postStock(state, {
+    ingredientId: "ing-cheese",
+    type: "purchase",
+    qty: 5,
+    unitCostPaisa: 24000,
+    reason: "Purchase 2",
+    partyId: null,
+    method: "cash",
+    day: localDate(),
+    adjustmentIn: true,
+  }, "Owner");
+  assert.equal(p2.ok, true);
+  if (!p2.ok) return;
+  state = p2.state;
+  const after = state.ingredients.find((i) => i.id === "ing-cheese")!;
+  assert.equal(after.stockQty, 15);
+  assert.equal(after.avgCostPaisa, 320000 / 15);
+});
+
+test("unit conversion kg/g and litre/ml and rejects incompatible", () => {
+  const kgToG = convertToIngredientUnit(1.5, "kg", "g");
+  assert.equal(kgToG.error, undefined);
+  assert.equal(kgToG.qty, 1500);
+  const gToKg = convertToIngredientUnit(500, "g", "kg");
+  assert.equal(gToKg.qty, 0.5);
+  const lToMl = convertToIngredientUnit(2, "litre", "ml");
+  assert.equal(lToMl.qty, 2000);
+  const bad = convertToIngredientUnit(1, "kg", "ml");
+  assert.match(bad.error ?? "", /matching families|compatible/i);
+  const dozen = convertToIngredientUnit(2, "dozen", "pcs");
+  assert.equal(dozen.qty, 24);
+});
+
+// ─── Bug 1: exact purchase total (no unit-cost rounding drift) ───────────────
+
+test("purchase totalCostPaisa is recorded exactly (Rs 45/kg x 5 kg in grams)", () => {
+  let state = createSeedState();
+  const cheese = state.ingredients.find((i) => i.id === "ing-cheese")!;
+  cheese.stockQty = 0;
+  cheese.avgCostPaisa = 0;
+  cheese.unit = "g";
+
+  // Create a supplier for credit ledger check
+  const supplier = saveParty(
+    state,
+    { name: "Dairy Co", kind: "purchase", phone: "", address: "", notes: "", openingPaisa: 0 },
+    "Owner",
+  );
+  assert.equal(supplier.ok, true);
+  if (!supplier.ok) return;
+  state = supplier.state;
+  const supplierId = supplier.value;
+
+  // Rs 45/kg × 5 kg = Rs 225 = 22500 paisa. Stock unit g → 5000 g.
+  // Old bug: unitCost = round(22500/5000)=5 → total=25000 (Rs 250). Must stay 22500.
+  const bought = postStock(
+    state,
+    {
+      ingredientId: "ing-cheese",
+      type: "purchase",
+      qty: 5000,
+      adjustmentIn: true,
+      unitCostPaisa: 22500 / 5000, // 4.5 — fractional ok
+      totalCostPaisa: 22500,
+      reason: "Cheese 5kg @ 45",
+      partyId: supplierId,
+      method: "credit",
+      day: localDate(),
+    },
+    "Owner",
+  );
+  assert.equal(bought.ok, true);
+  if (!bought.ok) return;
+  state = bought.state;
+
+  const move = state.stockMovements.find((m) => m.ingredientId === "ing-cheese" && m.type === "purchase");
+  assert.ok(move);
+  assert.equal(move!.totalCostPaisa, 22500);
+  assert.equal(move!.qty, 5000);
+
+  const ing = state.ingredients.find((i) => i.id === "ing-cheese")!;
+  assert.equal(ing.stockQty, 5000);
+  assert.equal(ing.avgCostPaisa, 4.5);
+
+  const ledger = state.ledger.find((e) => e.type === "purchase" && e.partyId === supplierId);
+  assert.ok(ledger, "supplier ledger must record exact Rs 225");
+  assert.equal(ledger!.amountPaisa, 22500);
+
+  // Second purchase: 1000 g for Rs 50 (5000 paisa) → avg = (5000*4.5 + 5000) / 6000 = 4.5833…
+  const second = postStock(
+    state,
+    {
+      ingredientId: "ing-cheese",
+      type: "purchase",
+      qty: 1000,
+      adjustmentIn: true,
+      unitCostPaisa: 5,
+      totalCostPaisa: 5000,
+      reason: "Cheese top-up",
+      partyId: null,
+      method: "cash",
+      day: localDate(),
+    },
+    "Owner",
+  );
+  assert.equal(second.ok, true);
+  if (!second.ok) return;
+  const after = second.state.ingredients.find((i) => i.id === "ing-cheese")!;
+  assert.equal(after.stockQty, 6000);
+  assert.ok(Math.abs(after.avgCostPaisa - (5000 * 4.5 + 5000) / 6000) < 1e-9);
+});
+
+// ─── Bug 2: name-only must not merge customers ───────────────────────────────
+
+test("empty phone does not merge customers by name alone", () => {
+  const customers = [
+    { id: "c1", name: "Ali", phone: "", address: "", notes: "", manualTags: [], partyId: null, createdAt: "" },
+  ];
+  // Same name, both empty phone → no match (create new)
+  assert.equal(findCustomerByIdentity(customers, "Ali", ""), undefined);
+  assert.equal(findCustomerByIdentity(customers, "Ali", "   "), undefined);
+  // Name + phone match
+  customers.push({
+    id: "c2",
+    name: "Ali",
+    phone: "03001234567",
+    address: "",
+    notes: "",
+    manualTags: [],
+    partyId: null,
+    createdAt: "",
+  });
+  assert.equal(findCustomerByIdentity(customers, "Ali", "0300-1234567")?.id, "c2");
+  // Same phone, different name → no match
+  assert.equal(findCustomerByIdentity(customers, "Sara", "03001234567"), undefined);
+});
+
+test("two walk-in Ali without phone become separate customers on checkout", () => {
+  let state = createSeedState();
+  for (let i = 0; i < 2; i++) {
+    state.cart.lines = [pizzaLine("Regular", ["Tikka"])];
+    state.cart.idempotencyKey = crypto.randomUUID();
+    state.cart.customerId = null;
+    state.cart.customerName = "Ali";
+    state.cart.phone = "";
+    const totals = cartTotals(state);
+    const result = checkout(state, {
+      actorId: "owner",
+      actorName: "Owner",
+      tenders: [{ method: "cash", tenderedPaisa: totals.totalPaisa }],
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    state = result.state;
+  }
+  const alis = state.customers.filter((c) => normalizeName(c.name) === "ali" && !normalizePhone(c.phone));
+  assert.equal(alis.length, 2, "two nameless-phone Ali must stay separate");
+});
+
+// ─── Bug 3: packet/box are not interchangeable with pcs ──────────────────────
+
+test("packet and box only convert to themselves; dozen still works", () => {
+  assert.equal(convertToIngredientUnit(3, "packet", "packet").qty, 3);
+  assert.equal(convertToIngredientUnit(2, "box", "box").qty, 2);
+  assert.match(convertToIngredientUnit(1, "packet", "pcs").error ?? "", /Packet\/box/i);
+  assert.match(convertToIngredientUnit(1, "box", "pcs").error ?? "", /Packet\/box/i);
+  assert.match(convertToIngredientUnit(1, "packet", "box").error ?? "", /Packet\/box/i);
+  assert.equal(convertToIngredientUnit(1, "dozen", "pcs").qty, 12);
+  assert.equal(convertToIngredientUnit(24, "pcs", "dozen").qty, 2);
+});
+
+test("formatUnitCost keeps fractional paisa instead of truncating", () => {
+  assert.equal(formatUnitCost(4.5), "4.5 paisa");
+  assert.equal(formatUnitCost(5), "5 paisa");
+  assert.equal(formatUnitCost(80), "80 paisa");
+  assert.equal(formatUnitCost(0.25), "0.25 paisa");
+  assert.equal(formatUnitCost(150), "Rs. 1.50");
+  assert.equal(formatUnitCost(0), "Rs. 0");
+  assert.equal(formatPkr(4.5), "Rs. 0.04", "money totals still use whole paisa");
+});
+
+test("fresh install is empty — no sample menu, ingredients or recipes", () => {
+  const fresh = createInstallState();
+  assert.equal(fresh.ingredients.length, 0);
+  assert.equal(fresh.recipes.length, 0);
+  assert.equal(fresh.products.length, 0);
+  assert.equal(fresh.deals.length, 0);
+  assert.equal(fresh.categories.length, 0);
+  assert.equal(fresh.orders.length, 0);
+  assert.equal(fresh.customers.length, 0);
+});
+
+test("admin can add own ingredient and purchase it on a fresh install", () => {
+  let state = createInstallState();
+  const saved = saveIngredient(
+    state,
+    { id: "", name: "Mozzarella", unit: "g", kind: "ingredient", stockQty: 0, avgCostPaisa: 0, minQty: 0, active: true },
+    "Owner",
+  );
+  assert.equal(saved.ok, true);
+  if (!saved.ok) return;
+  state = saved.state;
+  assert.equal(state.ingredients.length, 1);
+  const bought = postStock(
+    state,
+    { ingredientId: saved.value, type: "purchase", qty: 1000, adjustmentIn: true, unitCostPaisa: 0, totalCostPaisa: 90000, reason: "first purchase", partyId: null, method: "cash", day: businessDate() },
+    "Owner",
+  );
+  assert.equal(bought.ok, true);
+  if (!bought.ok) return;
+  assert.equal(bought.state.ingredients[0]!.stockQty, 1000);
+  assert.equal(bought.state.ingredients[0]!.avgCostPaisa, 90);
+});
+
+/* ------------------------------------------------------------------ */
+/*  Universal engine + production tests (2.3)                          */
+/* ------------------------------------------------------------------ */
+
+
+test("product with modifier groups prices correctly and validates required selections", () => {
+  let state = createInstallState();
+  state.categories.push({ id: "cat-1", name: "Burgers", kind: "other", sort: 1, active: true });
+  const product: import("./types.ts").Product = {
+    id: "prod-burger",
+    name: "Classic Burger",
+    description: "Build your burger",
+    sku: "BG-01",
+    categoryId: "cat-1",
+    type: "other",
+    imageId: null,
+    basePricePaisa: 45000,
+    costPricePaisa: null,
+    sizes: [],
+    flavours: [],
+    halfAndHalf: false,
+    addons: [],
+    modifierGroups: [
+      {
+        id: "grp-patty",
+        name: "Patty",
+        description: "",
+        selectionMode: "single",
+        required: true,
+        minSelections: 1,
+        maxSelections: 1,
+        options: [
+          { id: "opt-single", name: "Single", pricePaisa: 0, active: true, sort: 1, isDefault: true },
+          { id: "opt-double", name: "Double", pricePaisa: 15000, active: true, sort: 2 },
+        ],
+        active: true,
+        sort: 1,
+      },
+      {
+        id: "grp-cheese",
+        name: "Cheese",
+        description: "",
+        selectionMode: "multi",
+        required: false,
+        minSelections: 0,
+        maxSelections: 2,
+        options: [
+          { id: "opt-cheddar", name: "Cheddar", pricePaisa: 5000, ingredientId: "ing-cheese", ingredientQty: 30, active: true, sort: 1 },
+          { id: "opt-swiss", name: "Swiss", pricePaisa: 6000, active: true, sort: 2 },
+        ],
+        active: true,
+        sort: 2,
+      },
+    ],
+    trackStock: false,
+    stockQty: 0,
+    minStock: 0,
+    active: true,
+    sort: 1,
+  };
+  const saved = saveProduct(state, product, "Owner");
+  assert.equal(saved.ok, true, saved.ok ? "" : (saved as any).error);
+  if (!saved.ok) return;
+  state = saved.state;
+
+  const missing = cartTotals({
+    ...state,
+    cart: { ...state.cart, lines: [{ key: "1", kind: "product", refId: "prod-burger", qty: 1, notes: "", config: {} }] },
+  });
+  assert.ok(missing.error, "should require patty selection");
+
+  const priced = cartTotals({
+    ...state,
+    cart: {
+      ...state.cart,
+      lines: [{
+        key: "1", kind: "product", refId: "prod-burger", qty: 1, notes: "",
+        config: {
+          modifierSelections: [
+            { groupId: "grp-patty", optionIds: ["opt-single"] },
+            { groupId: "grp-cheese", optionIds: ["opt-cheddar"] },
+          ],
+        },
+      }],
+    },
+  });
+  assert.equal(priced.error, null);
+  assert.equal(priced.subtotalPaisa, 50000);
+});
+
+test("modifier option with ingredientQty deducts stock on checkout", () => {
+  let state = createInstallState();
+  state.categories.push({ id: "cat-1", name: "Burgers", kind: "other", sort: 1, active: true });
+  const ing = saveIngredient(
+    state,
+    { id: "ing-patty", name: "Beef Patty", unit: "pcs", kind: "ingredient", stockQty: 0, avgCostPaisa: 0, minQty: 0, active: true },
+    "Owner",
+  );
+  assert.equal(ing.ok, true);
+  if (!ing.ok) return;
+  state = ing.state;
+  const bought = postStock(
+    state,
+    { ingredientId: "ing-patty", type: "purchase", qty: 20, adjustmentIn: true, unitCostPaisa: 8000, totalCostPaisa: 160000, reason: "patties", partyId: null, method: "cash", day: businessDate() },
+    "Owner",
+  );
+  assert.equal(bought.ok, true);
+  if (!bought.ok) return;
+  state = bought.state;
+
+  const product: import("./types.ts").Product = {
+    id: "prod-burger2", name: "Smash Burger", description: "", sku: "BG-02", categoryId: "cat-1", type: "other",
+    imageId: null, basePricePaisa: 50000, costPricePaisa: null, sizes: [], flavours: [], halfAndHalf: false, addons: [],
+    modifierGroups: [{
+      id: "grp-size", name: "Size", description: "", selectionMode: "single", required: true, minSelections: 1, maxSelections: 1,
+      options: [
+        { id: "opt-s", name: "Single", pricePaisa: 0, ingredientId: "ing-patty", ingredientQty: 1, active: true, sort: 1 },
+        { id: "opt-d", name: "Double", pricePaisa: 20000, ingredientId: "ing-patty", ingredientQty: 2, active: true, sort: 2 },
+      ],
+      active: true, sort: 1,
+    }],
+    trackStock: false, stockQty: 0, minStock: 0, active: true, sort: 1,
+  };
+  const saved = saveProduct(state, product, "Owner");
+  assert.equal(saved.ok, true);
+  if (!saved.ok) return;
+  state = saved.state;
+
+  const line: CartLine = {
+    key: "b1", kind: "product", refId: "prod-burger2", qty: 1, notes: "",
+    config: { modifierSelections: [{ groupId: "grp-size", optionIds: ["opt-d"] }] },
+  };
+  const result = sell(state, line, [{ method: "cash", tenderedPaisa: 100000 }]);
+  assert.equal(result.ok, true, result.ok ? "" : (result as any).error);
+  if (!result.ok) return;
+  assert.equal(result.state.ingredients.find((i) => i.id === "ing-patty")!.stockQty, 18);
+});
+
+test("half-and-half applies base once and flavour recipes at 50%", () => {
+  let state = createSeedState();
+  const cheese = state.ingredients.find((i) => i.name.toLowerCase().includes("cheese"));
+  assert.ok(cheese);
+  const stocked = postStock(
+    state,
+    { ingredientId: cheese!.id, type: "purchase", qty: 2000, adjustmentIn: true, unitCostPaisa: 90, totalCostPaisa: 180000, reason: "test", partyId: null, method: "cash", day: businessDate() },
+    "Owner",
+  );
+  assert.equal(stocked.ok, true);
+  if (!stocked.ok) return;
+  state = stocked.state;
+  state.recipes = state.recipes.filter((r) => !(r.productId === "prod-pizza" && r.sizeName === "Large"));
+  const sauce = state.ingredients.find((i) => i.name.toLowerCase().includes("sauce"))!;
+  state.recipes.push(
+    { id: "rec-base-l", productId: "prod-pizza", dealId: null, sizeName: "Large", flavourName: null, lines: [{ ingredientId: sauce.id, qty: 80 }], active: true, note: "shared", isAdjustment: false },
+    { id: "rec-tikka-l", productId: "prod-pizza", dealId: null, sizeName: "Large", flavourName: "Tikka", lines: [{ ingredientId: cheese!.id, qty: 200 }], active: true, note: "tikka", isAdjustment: false },
+    { id: "rec-fajita-l", productId: "prod-pizza", dealId: null, sizeName: "Large", flavourName: "Fajita", lines: [{ ingredientId: cheese!.id, qty: 180 }], active: true, note: "fajita", isAdjustment: false },
+  );
+  const cheeseBefore = state.ingredients.find((i) => i.id === cheese!.id)!.stockQty;
+  const result = sell(state, pizzaLine("Large", ["Tikka", "Fajita"]), [{ method: "cash", tenderedPaisa: 200000 }]);
+  assert.equal(result.ok, true, result.ok ? "" : (result as any).error);
+  if (!result.ok) return;
+  const used = cheeseBefore - result.state.ingredients.find((i) => i.id === cheese!.id)!.stockQty;
+  assert.ok(Math.abs(used - 190) < 0.01, `expected ~190 got ${used}`);
+});
+
+test("legacy products without modifierGroups still work after normalize", async () => {
+  const state = createSeedState();
+  for (const p of state.products) delete (p as any).modifierGroups;
+  const { normalizeState } = await import("./db.ts");
+  const normalized = normalizeState(state);
+  for (const p of normalized.products) {
+    assert.ok(Array.isArray(p.modifierGroups));
+  }
+  const totals = cartTotals({ ...normalized, cart: { ...normalized.cart, lines: [pizzaLine("Large", ["Tikka"])] } });
+  assert.equal(totals.error, null);
+  assert.ok(totals.subtotalPaisa > 0);
+});
+
+test("production batch deducts raw and increases prepared stock", () => {
+  let state = createInstallState();
+  // Raw ingredients
+  for (const [id, name, unit] of [["ing-tomato", "Tomato", "g"], ["ing-oil", "Oil", "ml"], ["ing-spice", "Spice Mix", "g"]] as const) {
+    const r = saveIngredient(state, { id, name, unit, kind: "ingredient", stockQty: 0, avgCostPaisa: 0, minQty: 0, active: true }, "Owner");
+    assert.equal(r.ok, true);
+    if (!r.ok) return;
+    state = r.state;
+  }
+  // Stock them
+  for (const [id, qty, cost] of [["ing-tomato", 5000, 50], ["ing-oil", 2000, 20], ["ing-spice", 500, 100]] as const) {
+    const r = postStock(state, { ingredientId: id, type: "purchase", qty, adjustmentIn: true, unitCostPaisa: cost, totalCostPaisa: qty * cost, reason: "stock", partyId: null, method: "cash", day: businessDate() }, "Owner");
+    assert.equal(r.ok, true);
+    if (!r.ok) return;
+    state = r.state;
+  }
+  // Production recipe (for 1 unit of sauce: 400g tomato, 50ml oil, 10g spice)
+  const recipe = {
+    id: "rec-sauce", productId: null, dealId: null, sizeName: null, flavourName: null,
+    lines: [
+      { ingredientId: "ing-tomato", qty: 400 },
+      { ingredientId: "ing-oil", qty: 50 },
+      { ingredientId: "ing-spice", qty: 10 },
+    ],
+    active: true, note: "Pizza sauce recipe", isAdjustment: false,
+  };
+  state.recipes.push(recipe as any);
+  // Prepared ingredient
+  const prep = saveIngredient(state, {
+    id: "ing-sauce-prep", name: "Pizza Sauce", unit: "kg", kind: "prepared",
+    stockQty: 0, avgCostPaisa: 0, minQty: 0, active: true, productionRecipeId: "rec-sauce",
+  }, "Owner");
+  assert.equal(prep.ok, true);
+  if (!prep.ok) return;
+  state = prep.state;
+
+  const preview = previewProduction(state, "ing-sauce-prep", 2);
+  assert.equal(preview.ok, true);
+  if (!preview.ok) return;
+  assert.equal(preview.lines.length, 3);
+  assert.equal(preview.totalCostPaisa, 2 * (400 * 50 + 50 * 20 + 10 * 100));
+
+  const produced = produceBatch(state, "ing-sauce-prep", 2, "Morning batch", "Owner");
+  assert.equal(produced.ok, true, produced.ok ? "" : (produced as any).error);
+  if (!produced.ok) return;
+  state = produced.state;
+  assert.equal(state.ingredients.find((i) => i.id === "ing-sauce-prep")!.stockQty, 2);
+  assert.equal(state.ingredients.find((i) => i.id === "ing-tomato")!.stockQty, 5000 - 800);
+  assert.equal(state.productionBatches.length, 1);
+
+  // Reverse
+  const rev = reverseProductionBatch(state, produced.value, "Owner");
+  assert.equal(rev.ok, true, rev.ok ? "" : (rev as any).error);
+  if (!rev.ok) return;
+  assert.equal(rev.state.ingredients.find((i) => i.id === "ing-sauce-prep")!.stockQty, 0);
+  assert.equal(rev.state.ingredients.find((i) => i.id === "ing-tomato")!.stockQty, 5000);
+  assert.equal(rev.state.productionBatches[0]!.reversed, true);
+});
+
+test("production blocks circular recipes and insufficient stock when protected", () => {
+  let state = createInstallState();
+  state.settings.blockNegativeStock = true;
+  const r1 = saveIngredient(state, { id: "ing-a", name: "Raw A", unit: "g", kind: "ingredient", stockQty: 0, avgCostPaisa: 0, minQty: 0, active: true }, "Owner");
+  assert.equal(r1.ok, true); if (!r1.ok) return; state = r1.state;
+  const r2 = saveIngredient(state, { id: "ing-prep", name: "Prepared Mix", unit: "g", kind: "prepared", stockQty: 0, avgCostPaisa: 0, minQty: 0, active: true, productionRecipeId: "rec-circ" }, "Owner");
+  assert.equal(r2.ok, true); if (!r2.ok) return; state = r2.state;
+  state.recipes.push({
+    id: "rec-circ", productId: null, dealId: null, sizeName: null, flavourName: null,
+    lines: [{ ingredientId: "ing-prep", qty: 1 }], // circular
+    active: true, note: "", isAdjustment: false,
+  } as any);
+  const preview = previewProduction(state, "ing-prep", 1);
+  assert.equal(preview.ok, false);
 });

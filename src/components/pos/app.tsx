@@ -232,7 +232,7 @@ function Shell() {
   }
   const title = NAV.flatMap((group) => group.items).find((item) => item.id === page)?.label ?? "Till";
   return (
-    <div className="min-h-screen bg-bg text-fg md:grid md:grid-cols-[16rem_minmax(0,1fr)]">
+    <div className="app-shell min-h-screen bg-bg text-fg md:grid md:grid-cols-[16rem_minmax(0,1fr)]">
       <aside className={`${navOpen ? "fixed inset-0 z-30 flex" : "hidden"} flex-col bg-surface md:static md:flex`}>
         <div className="flex items-center gap-3 border-b border-border/80 p-4">
           <BeerflowIcon className="size-11 shrink-0" />
@@ -302,9 +302,11 @@ function Shell() {
         </div>
       ) : null}
       {printOrder ? (
-        <div className="fixed inset-0 z-40 overflow-auto bg-bg/80 p-4">
-          <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-surface p-4">
-            <div className="mb-3 flex flex-wrap gap-2">
+        <div className="receipt-overlay fixed inset-0 z-40 overflow-auto bg-bg/80 p-4">
+          {/* Roll width comes from the printer driver; zero page margin lets the receipt use the full printable width. */}
+          <style>{layout === "a4" ? "@page { size: A4; margin: 10mm; }" : "@page { margin: 0; }"}</style>
+          <div className="receipt-card mx-auto max-w-3xl rounded-2xl border border-border bg-surface p-4">
+            <div className="receipt-toolbar mb-3 flex flex-wrap gap-2">
               {(["58", "80", "a4"] as const).map((item) => (
                 <button key={item} className={`min-h-11 rounded-full px-4 text-sm font-semibold ${layout === item ? "bg-accent text-accent-fg" : "bg-surface-2"}`} onClick={() => setLayout(item)}>{item === "a4" ? "A4" : `${item} mm`}</button>
               ))}

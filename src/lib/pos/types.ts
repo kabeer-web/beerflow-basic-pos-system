@@ -1,8 +1,8 @@
 export type Role = "owner" | "cashier";
 export type PayMethod = "cash" | "card" | "wallet";
 export type Channel = "dine-in" | "takeaway" | "delivery";
-export type ProductType = "pizza" | "drink" | "side" | "extra" | "other";
-export type CategoryKind = "deals" | "pizza" | "drinks" | "sides" | "extras" | "other";
+export type ProductType = "pizza" | "drink" | "side" | "extra" | "other" | "generic";
+export type CategoryKind = "deals" | "pizza" | "drinks" | "sides" | "extras" | "other" | "food" | "beverages" | "desserts" | "bakery";
 
 export interface StaffUser {
   id: string;
@@ -56,6 +56,7 @@ export interface Category {
   active: boolean;
 }
 
+/** Legacy named price (size / flavour / addon). Kept for backward compatibility. */
 export interface NamedPrice {
   id: string;
   name: string;
@@ -64,6 +65,44 @@ export interface NamedPrice {
   ingredientId?: string | null;
   /** Extra quantity of the linked ingredient (in the ingredient's unit) */
   extraQty?: number;
+}
+
+/* ------------------------------------------------------------------ */
+/*  UNIVERSAL MODIFIER ENGINE                                          */
+/* ------------------------------------------------------------------ */
+
+export type ModifierSelectionMode = "single" | "multi";
+
+export interface ModifierOption {
+  id: string;
+  name: string;
+  /** Price adjustment in paisa (can be 0, positive or negative) */
+  pricePaisa: number;
+  /** Optional linked ingredient consumption when this option is chosen */
+  ingredientId?: string | null;
+  /** Quantity of the linked ingredient (positive = add, negative = remove) */
+  ingredientQty?: number;
+  /** Multiplier applied to the base recipe quantity of this ingredient (e.g. 2 = double) */
+  qtyMultiplier?: number;
+  /** Whether this option is available */
+  active: boolean;
+  sort: number;
+  /** Default selected when the group is first shown */
+  isDefault?: boolean;
+}
+
+export interface ModifierGroup {
+  id: string;
+  name: string;
+  description: string;
+  /** single = radio, multi = checkboxes */
+  selectionMode: ModifierSelectionMode;
+  required: boolean;
+  minSelections: number;
+  maxSelections: number;
+  options: ModifierOption[];
+  active: boolean;
+  sort: number;
 }
 
 export interface Product {
@@ -76,15 +115,27 @@ export interface Product {
   imageId: string | null;
   basePricePaisa: number;
   costPricePaisa: number | null;
+  /** Legacy size list – still fully supported */
   sizes: NamedPrice[];
+  /** Legacy flavour list – still fully supported */
   flavours: NamedPrice[];
   halfAndHalf: boolean;
+  /** Legacy addon list – still fully supported */
   addons: NamedPrice[];
+  /**
+   * New universal modifier groups attached to this product.
+   * Empty array = product uses only legacy sizes/flavours/addons.
+   */
+  modifierGroups: ModifierGroup[];
   trackStock: boolean;
   stockQty: number;
   minStock: number;
   active: boolean;
   sort: number;
+  /** Free-form preparation notes for kitchen */
+  prepNotes?: string;
+  /** Whether finished-goods stock is tracked (in addition to recipe ingredients) */
+  trackFinishedStock?: boolean;
 }
 
 export interface DealSlot {
@@ -167,11 +218,19 @@ export interface LinePick {
   qty: number;
 }
 
+/** Selected modifier options for a cart / order line */
+export interface ModifierSelection {
+  groupId: string;
+  optionIds: string[];
+}
+
 export interface LineConfig {
   sizeName?: string;
   flavours?: string[];
   addonIds?: string[];
   picks?: LinePick[];
+  /** New universal modifier selections */
+  modifierSelections?: ModifierSelection[];
 }
 
 export interface CartLine {
@@ -263,30 +322,87 @@ export interface Expense {
   voidReason: string;
 }
 
+/* ------------------------------------------------------------------ */
+/*  INGREDIENT & RECIPE ENGINE                                         */
+/* ------------------------------------------------------------------ */
+
+export type IngredientCategory =
+  | "meat"
+  | "chicken"
+  | "beef"
+  | "mutton"
+  | "seafood"
+  | "dairy"
+  | "cheese"
+  | "vegetables"
+  | "fruits"
+  | "spices"
+  | "sauces"
+  | "flour"
+  | "bakery"
+  | "rice"
+  | "beverages"
+  | "packaging"
+  | "cleaning"
+  | "prepared"
+  | "other";
+
 export interface Ingredient {
   id: string;
   name: string;
+  /** Stock / recipe unit (g, kg, ml, litre, pcs, dozen …) */
   unit: string;
-  kind: "ingredient" | "packaging";
+  /** Purchase unit (may differ from stock unit) */
+  purchaseUnit?: string;
+  /** How many stock-units equal one purchase-unit (e.g. 1000 for kg→g) */
+  conversionFactor?: number;
+  kind: "ingredient" | "packaging" | "prepared";
+  category?: IngredientCategory | string;
   stockQty: number;
   avgCostPaisa: number;
   minQty: number;
+  reorderLevel?: number;
   active: boolean;
+  sku?: string;
+  notes?: string;
+  /** If this is a prepared item, the recipe that produces it */
+  productionRecipeId?: string | null;
 }
 
 export interface RecipeLine {
   ingredientId: string;
   qty: number;
+  /** Optional note for this line (e.g. "base dough only") */
+  note?: string;
 }
 
+/**
+ * Recipe matching priority (highest → lowest):
+ * 1. Exact product + size + flavour + modifier combination
+ * 2. Product + size + flavour
+ * 3. Product + size
+ * 4. Product only
+ * 5. Deal-level recipe
+ *
+ * Half-and-half: two flavour recipes are each applied at 0.5×, shared base is applied once.
+ */
 export interface Recipe {
   id: string;
   productId: string | null;
   dealId: string | null;
   sizeName: string | null;
+  /** Flavour this recipe belongs to (null = base / any) */
+  flavourName?: string | null;
+  /** Optional modifier option IDs that must all be selected for this recipe to apply */
+  requiredModifierOptionIds?: string[];
   lines: RecipeLine[];
   active: boolean;
   note: string;
+  /**
+   * When true this recipe is an *adjustment* (additions / removals) rather than a full base recipe.
+   * Used for modifier-driven ingredient changes.
+   */
+  isAdjustment?: boolean;
 }
 
 export interface StockMovement {
@@ -294,7 +410,7 @@ export interface StockMovement {
   at: string;
   ingredientId: string | null;
   productId: string | null;
-  type: "purchase" | "sale" | "wastage" | "adjustment" | "reversal" | "out";
+  type: "purchase" | "sale" | "wastage" | "adjustment" | "reversal" | "out" | "production";
   qty: number;
   unitCostPaisa: number;
   totalCostPaisa: number;
@@ -302,6 +418,25 @@ export interface StockMovement {
   partyId: string | null;
   orderId: string | null;
   reason: string;
+  /** Optional reference to a production batch */
+  productionBatchId?: string | null;
+}
+
+/** Batch production of a prepared ingredient */
+export interface ProductionBatch {
+  id: string;
+  preparedIngredientId: string;
+  quantity: number;
+  unit: string;
+  producedAt: string;
+  producedBy: string;
+  rawCostPaisa: number;
+  notes: string;
+  /** Stock movement IDs created by this batch (for reversal) */
+  movementIds?: string[];
+  reversed?: boolean;
+  reversedAt?: string | null;
+  reversedBy?: string | null;
 }
 
 export interface AuditEvent {
@@ -346,7 +481,7 @@ export interface ClosedDay {
 }
 
 export interface AppState {
-  meta: { version: 1; nextOrder: number; createdAt: string };
+  meta: { version: 2; nextOrder: number; createdAt: string };
   settings: Settings;
   staff: StaffUser[];
   categories: Category[];
@@ -362,6 +497,7 @@ export interface AppState {
   stockMovements: StockMovement[];
   audit: AuditEvent[];
   closedDays: ClosedDay[];
+  productionBatches: ProductionBatch[];
   cart: Cart;
 }
 

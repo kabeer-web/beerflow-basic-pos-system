@@ -79,7 +79,7 @@ function settings(): Settings {
     tagFrequentMinDays: 3,
     tagInactiveDays: 14,
     tagVipSpendPaisa: 1_000_000,
-    tagVipVisits: 12,
+    tagVipVisits: 4,
     tagNewDays: 14,
   };
 }
@@ -113,6 +113,7 @@ function products(): Product[] {
       { id: "add-cheese", name: "Extra cheese", pricePaisa: 0, ingredientId: "ing-cheese", extraQty: 50 },
       { id: "add-topping", name: "Extra topping", pricePaisa: 0 },
     ],
+    modifierGroups: [],
     trackStock: false,
     stockQty: 0,
     minStock: 0,
@@ -141,6 +142,7 @@ function products(): Product[] {
     flavours: [],
     halfAndHalf: false,
     addons: [],
+    modifierGroups: [],
     trackStock: false,
     stockQty: 0,
     minStock: 0,
@@ -162,6 +164,7 @@ function products(): Product[] {
     flavours: [],
     halfAndHalf: false,
     addons: [],
+    modifierGroups: [],
     trackStock: false,
     stockQty: 0,
     minStock: 0,
@@ -393,7 +396,7 @@ function recipes(): Recipe[] {
 /** Starter till. Menu prices are from the shop card and website, not sample fiction. Stock starts at zero until the owner counts it. */
 export function createSeedState(now = new Date().toISOString()): AppState {
   return {
-    meta: { version: 1, nextOrder: 1001, createdAt: now },
+    meta: { version: 2, nextOrder: 1001, createdAt: now },
     settings: settings(),
     staff: [],
     categories: [
@@ -415,6 +418,37 @@ export function createSeedState(now = new Date().toISOString()): AppState {
     stockMovements: [],
     audit: [],
     closedDays: [],
+    productionBatches: [],
+    cart: emptyCart(),
+  };
+}
+
+/**
+ * State for a brand-new installation.
+ * Completely empty till: no sample menu, no deals, no categories, no ingredients, no recipes.
+ * The owner adds their own categories, products, deals, ingredients and recipes after install.
+ * Existing installations are never touched (initDatabase only calls this when no data exists).
+ * createSeedState() remains available for unit tests only.
+ */
+export function createInstallState(now = new Date().toISOString()): AppState {
+  return {
+    meta: { version: 2, nextOrder: 1001, createdAt: now },
+    settings: settings(),
+    staff: [],
+    categories: [],
+    products: [],
+    deals: [],
+    customers: [],
+    parties: [],
+    ledger: [],
+    orders: [],
+    expenses: [],
+    ingredients: [],
+    recipes: [],
+    stockMovements: [],
+    audit: [],
+    closedDays: [],
+    productionBatches: [],
     cart: emptyCart(),
   };
 }

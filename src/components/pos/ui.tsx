@@ -20,11 +20,11 @@ export function Button({
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "accent" | "ghost" | "outline" | "success" }) {
   const look = {
-    primary: "bg-gradient-to-r from-primary to-[#4F46E5] text-primary-fg shadow-[0_8px_24px_-10px_rgba(99,102,241,0.75)] hover:brightness-110",
-    accent: "bg-accent text-accent-fg shadow-[0_8px_20px_-10px_rgba(34,211,238,0.5)] hover:brightness-110",
+    primary: "bg-gradient-to-r from-primary to-[#4F46E5] text-primary-fg shadow-[0_8px_24px_-10px_rgba(224,122,61,0.7)] hover:brightness-110",
+    accent: "bg-accent text-accent-fg shadow-[0_8px_20px_-10px_rgba(240,180,41,0.5)] hover:brightness-110",
     ghost: "bg-transparent text-fg hover:bg-surface-2",
     outline: "border border-border bg-surface/80 text-fg hover:bg-surface-2 hover:border-primary/40",
-    success: "bg-success text-success-fg shadow-[0_8px_20px_-10px_rgba(52,211,153,0.45)]",
+    success: "bg-success text-success-fg shadow-[0_8px_20px_-10px_rgba(107,158,74,0.45)]",
   }[variant];
   return (
     <button
@@ -132,7 +132,7 @@ export function Empty({ title, body, action }: { title: string; body: string; ac
 
 const BEERFLOW_GRADIENT = "linear-gradient(90deg, #6366f1, #22d3ee)";
 
-/** BeerFlow's icon: dark rounded square with an indigo-to-cyan "B". */
+/** BeerFlow's icon: dark rounded square with a indigo-to-cyan brand "B". */
 export function BeerflowIcon({ className }: { className?: string }) {
   const id = useId();
   return (

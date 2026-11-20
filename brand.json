@@ -8,9 +8,9 @@
     "email": "beerflowtechnologies@gmail.com"
   },
   "colors": {
-    "background": "#0B0A18",
-    "accentFrom": "#4F46E5",
-    "accentTo": "#06B6D4"
+    "background": "#120C09",
+    "accentFrom": "#E07A3D",
+    "accentTo": "#F0B429"
   },
   "assets": {
     "logoMark": "src/assets/logo-mark.png",

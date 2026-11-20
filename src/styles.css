@@ -1,19 +1,20 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #08071A;
-  --color-surface: #12112A;
-  --color-surface-2: #1A1838;
-  --color-fg: #F4F3FA;
-  --color-muted: #8B87A8;
-  --color-primary: #6366F1;
-  --color-primary-fg: #EEF2FF;
-  --color-accent: #22D3EE;
-  --color-accent-fg: #083344;
-  --color-success: #34D399;
-  --color-success-fg: #022C22;
-  --color-danger: #F87171;
-  --color-border: #2A2755;
+  /* Warm restaurant / cafe palette — espresso, terracotta, amber */
+  --color-bg: #120C09;
+  --color-surface: #1C1410;
+  --color-surface-2: #2A1F18;
+  --color-fg: #F8F1E9;
+  --color-muted: #A89888;
+  --color-primary: #E07A3D;
+  --color-primary-fg: #1A0F08;
+  --color-accent: #F0B429;
+  --color-accent-fg: #1A1205;
+  --color-success: #6B9E4A;
+  --color-success-fg: #0F1A0A;
+  --color-danger: #E85A4F;
+  --color-border: #3D2E24;
   --font-sans: "Inter", "Outfit", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Outfit", "Inter", ui-sans-serif, system-ui, sans-serif;
   --radius-xl: 1rem;
@@ -53,16 +54,41 @@
   }
 }
 
+/* Status pieces in the warm cafe palette */
+.vip-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #fcd34d;
+  background: rgba(240, 180, 41, 0.16);
+  border: 1px solid rgba(240, 180, 41, 0.4);
+}
+.note-box {
+  border-radius: 0.85rem;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.875rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-fg);
+}
+.note-box.note-ok { border-color: rgba(107, 158, 74, 0.5); background: rgba(107, 158, 74, 0.12); }
+.note-box.note-warn { border-color: rgba(240, 180, 41, 0.5); background: rgba(240, 180, 41, 0.12); }
+
 .tablecloth {
   height: 3px;
-  background: linear-gradient(90deg, #6366F1, #22D3EE, #6366F1);
+  background: linear-gradient(90deg, #E07A3D, #F0B429, #E07A3D);
 }
 
 .login-shell {
   min-height: 100vh;
   background:
-    radial-gradient(ellipse 80% 60% at 15% 0%, rgba(99, 102, 241, 0.28), transparent 55%),
-    radial-gradient(ellipse 60% 45% at 100% 100%, rgba(34, 211, 238, 0.12), transparent 50%),
+    radial-gradient(ellipse 80% 60% at 15% 0%, rgba(224, 122, 61, 0.22), transparent 55%),
+    radial-gradient(ellipse 60% 45% at 100% 100%, rgba(240, 180, 41, 0.10), transparent 50%),
     var(--color-bg);
 }
 
@@ -81,9 +107,9 @@
 }
 .nav-item:hover { background: var(--color-surface-2); }
 .nav-item.is-active {
-  background: linear-gradient(110deg, #6366F1, #4F46E5);
-  color: #EEF2FF;
-  box-shadow: 0 8px 20px -10px rgba(99, 102, 241, 0.7);
+  background: linear-gradient(110deg, #E07A3D, #C45D2A);
+  color: #FFF8F0;
+  box-shadow: 0 8px 20px -10px rgba(224, 122, 61, 0.65);
 }
 
 .card {
@@ -94,15 +120,19 @@
 }
 
 .receipt-paper {
-  background: #fffef9;
-  color: #1a1404;
+  background: #ffffff;
+  color: #000;
 }
 .receipt-paper .ink-muted {
-  color: #5c5346;
+  color: #333;
 }
-.print-58 { width: 58mm; }
-.print-80 { width: 80mm; }
+.print-58 { width: 58mm; max-width: 100%; }
+.print-80 { width: 80mm; max-width: 100%; }
 .print-a4 { width: 180mm; max-width: 100%; }
+/* Amount column never shrinks or wraps; item names wrap instead. */
+.receipt-paper p.flex > span:last-child { flex-shrink: 0; white-space: nowrap; }
+.receipt-paper p.flex > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.receipt-paper { overflow-wrap: anywhere; }
 
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -113,11 +143,54 @@
   }
 }
 
+/* ───── Thermal receipt printing (58 mm / 80 mm rolls) ─────
+   Only while the receipt dialog is open. The dialog is normally a fixed, scrolling overlay,
+   which clips the receipt to the page and hides the right edge (amounts) on a narrow roll.
+   Here the app is removed from print flow and the receipt fills the printable width. */
 @media print {
-  body * { visibility: hidden; }
-  .print-area,
-  .print-area * { visibility: visible; }
-  .print-area {
+  body:has(.receipt-overlay) { background: #fff !important; margin: 0 !important; padding: 0 !important; height: auto !important; overflow: visible !important; }
+  body:has(.receipt-overlay) .app-shell { display: block !important; min-height: 0 !important; background: #fff !important; }
+  body:has(.receipt-overlay) .app-shell > *:not(.receipt-overlay) { display: none !important; }
+  body:has(.receipt-overlay) .receipt-overlay,
+  body:has(.receipt-overlay) .receipt-card,
+  body:has(.receipt-overlay) .print-area {
+    position: static !important;
+    inset: auto !important;
+    overflow: visible !important;
+    max-width: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: #fff !important;
+    visibility: visible !important;
+  }
+  body:has(.receipt-overlay) .receipt-toolbar { display: none !important; }
+  body:has(.receipt-overlay) .receipt-paper {
+    visibility: visible !important;
+    margin: 0 !important;
+    background: #fff !important;
+    box-sizing: border-box;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  body:has(.receipt-overlay) .receipt-paper * { visibility: visible !important; color: #000 !important; }
+  body:has(.receipt-overlay) .receipt-paper .ink-muted { color: #000 !important; }
+  body:has(.receipt-overlay) .receipt-paper h2,
+  body:has(.receipt-overlay) .receipt-paper .font-bold { font-weight: 800 !important; }
+  body:has(.receipt-overlay) .receipt-paper hr { border-color: #000 !important; border-top-width: 1px; }
+  body:has(.receipt-overlay) .receipt-paper img { filter: grayscale(1) contrast(1.8); }
+  body:has(.receipt-overlay) .receipt-paper.print-80 { max-width: 80mm; padding: 2mm 4mm !important; }
+  body:has(.receipt-overlay) .receipt-paper.print-58 { max-width: 58mm; padding: 2mm 3mm !important; }
+  body:has(.receipt-overlay) .receipt-paper.print-a4 { max-width: 180mm; padding: 8mm !important; }
+}
+
+@media print {
+  body:not(:has(.receipt-overlay)) * { visibility: hidden; }
+  body:not(:has(.receipt-overlay)) .print-area,
+  body:not(:has(.receipt-overlay)) .print-area * { visibility: visible; }
+  body:not(:has(.receipt-overlay)) .print-area {
     position: absolute;
     left: 0;
     top: 0;
@@ -129,13 +202,13 @@
 
 /* ───────── BeerFlow installer / uninstaller ───────── */
 .bf-stage {
-  --bf-a: #6366f1;
-  --bf-b: #22d3ee;
+  --bf-a: #E07A3D;
+  --bf-b: #F0B429;
   position: relative;
   min-height: 100vh;
   overflow: hidden;
-  background: #070a14;
-  color: #e8ecf8;
+  background: #120C09;
+  color: #F8F1E9;
   isolation: isolate;
 }
 .bf-stage[data-tone="danger"] {
@@ -165,8 +238,8 @@
 .bf-blob.one { top: -12rem; left: -10rem; background: var(--bf-a); }
 .bf-blob.two { bottom: -14rem; right: -8rem; background: var(--bf-b); animation-delay: -7s; }
 .bf-card {
-  background: rgba(14, 19, 36, 0.72);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(28, 20, 16, 0.78);
+  border: 1px solid rgba(255, 248, 240, 0.08);
   border-radius: 1.25rem;
   backdrop-filter: blur(18px);
   box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.05);

@@ -26,7 +26,7 @@ import { useLifecycle, writeInstall } from "@/lib/pos/lifecycle";
 import { BeerflowIcon, BeerflowWordmark } from "@/components/pos/ui";
 
 const PRODUCT = "BeerFlow POS";
-const VERSION = "2.0.0";
+const VERSION = "2.1.0";
 
 function delay(seconds: number): CSSProperties {
   return { "--d": `${seconds}s` } as CSSProperties;

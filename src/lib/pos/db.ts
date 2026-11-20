@@ -1,5 +1,5 @@
 import type { AppState } from "./types.ts";
-import { createSeedState, STARTER_LOGINS } from "./seed.ts";
+import { createInstallState, STARTER_LOGINS } from "./seed.ts";
 import { hashPassword } from "./password.ts";
 
 const DB_NAME = "beerflow-pos";
@@ -155,8 +155,9 @@ export async function exportBackup(): Promise<BackupFile> {
 function isState(value: unknown): value is AppState {
   if (!value || typeof value !== "object") return false;
   const state = value as AppState;
+  const ver = state.meta?.version;
   return (
-    state.meta?.version === 1 &&
+    (ver === 1 || ver === 2) &&
     Array.isArray(state.orders) &&
     Array.isArray(state.products) &&
     Array.isArray(state.deals) &&
@@ -183,12 +184,39 @@ export function normalizeState(state: AppState): AppState {
       (party as { active: boolean }).active = true;
     }
   }
+  for (const product of state.products ?? []) {
+    if (!Array.isArray((product as { modifierGroups?: unknown }).modifierGroups)) {
+      (product as { modifierGroups: unknown[] }).modifierGroups = [];
+    }
+  }
+  for (const ing of state.ingredients ?? []) {
+    if (!(ing as { kind?: string }).kind) {
+      (ing as { kind: string }).kind = "ingredient";
+    }
+  }
+  for (const recipe of state.recipes ?? []) {
+    if ((recipe as { flavourName?: unknown }).flavourName === undefined) {
+      (recipe as { flavourName: null }).flavourName = null;
+    }
+    if (!Array.isArray((recipe as { requiredModifierOptionIds?: unknown }).requiredModifierOptionIds)) {
+      (recipe as { requiredModifierOptionIds: string[] }).requiredModifierOptionIds = [];
+    }
+    if ((recipe as { isAdjustment?: unknown }).isAdjustment === undefined) {
+      (recipe as { isAdjustment: boolean }).isAdjustment = false;
+    }
+  }
+  if (!Array.isArray((state as { productionBatches?: unknown }).productionBatches)) {
+    (state as { productionBatches: unknown[] }).productionBatches = [];
+  }
+  if (state.meta && (state.meta as { version: number }).version < 2) {
+    (state.meta as { version: number }).version = 2;
+  }
   return state;
 }
 
 export async function importBackup(raw: unknown): Promise<AppState> {
   const data = raw as BackupFile;
-  if (!data || data.app !== "beerflow-pos" || data.version !== 1 || !isState(data.state)) {
+  if (!data || data.app !== "beerflow-pos" || (data.version !== 1 && data.version !== 2) || !isState(data.state)) {
     throw new Error("This file is not a BeerFlow POS backup.");
   }
   if (!Array.isArray(data.state.staff) || data.state.staff.length === 0) {
@@ -235,7 +263,7 @@ export function initDatabase(setup?: InstallSetup): Promise<AppState> {
   return enqueue(async () => {
     const existing = await rawGetState();
     if (existing) return normalizeState(existing);
-    const state = createSeedState();
+    const state = createInstallState();
     const now = new Date().toISOString();
     const shopName = setup?.shopName.trim();
     if (shopName) state.settings.shopName = shopName;
@@ -261,8 +289,8 @@ export function initDatabase(setup?: InstallSetup): Promise<AppState> {
       actor: "System",
       action: "setup",
       detail: setup
-        ? "Installed with the setup wizard. Starter sample menu loaded. Stock counts are empty until you enter them."
-        : "Starter sample menu loaded. Stock counts are empty until you enter them.",
+        ? "Installed with the setup wizard. Empty till — add your own categories, menu items, ingredients and recipes."
+        : "Empty till — add your own categories, menu items, ingredients and recipes.",
     });
     await rawPutState(state);
     return state;

@@ -1,3 +1,5 @@
+import poweredBy58 from "@/assets/receipt/receipt-powered-by-58mm.png";
+import poweredBy80 from "@/assets/receipt/receipt-powered-by-80mm.png";
 import { formatPkr, formatWhen } from "@/lib/pos/money";
 import type { Order, Settings } from "@/lib/pos/types";
 import { orderDue, orderPaid } from "@/lib/pos/logic";
@@ -69,7 +71,7 @@ export function ReceiptView({
       {order.notes ? <p className="mt-2">Note: {order.notes}</p> : null}
       {order.cancelReason ? <p>Cancelled: {order.cancelReason}</p> : null}
       <p className="mt-3 text-center text-xs">{settings.receiptFooter}</p>
-      <p className="mt-2 text-center text-xs ink-muted">Powered by BeerFlow Technologies</p>
+      <img src={layout === "58" ? poweredBy58 : poweredBy80} alt="Powered by BeerFlow Technologies" className="powered-by mx-auto mt-2 block h-auto w-full max-w-full" style={{ imageRendering: "pixelated" }} />
     </article>
   );
 }

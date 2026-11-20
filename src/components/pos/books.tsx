@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { formatPkr, formatWhen, localDate, parseQty, rupeesToPaisa } from "@/lib/pos/money";
+import { formatPkr, formatUnitCost, formatWhen, localDate, parseQty, rupeesToPaisa } from "@/lib/pos/money";
 import { convertToIngredientUnit, customerStats, partyBalance, summarize } from "@/lib/pos/logic";
 import { usePos } from "@/lib/pos/store";
 import { readInstall, useLifecycle } from "@/lib/pos/lifecycle";
@@ -17,7 +17,7 @@ export function InventoryScreen() {
   return (
     <div className="grid gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="max-w-xl text-sm text-muted">Stock value uses weighted average cost. Sales deduct a recipe once. A deal with its own recipe does not also deduct the pizzas inside it. Items without a recipe are manual.</p>
+        <p className="max-w-xl text-sm text-muted">Stock value uses weighted average cost. Sales deduct a recipe once. A deal with its own recipe does not also deduct the items inside it. Items without a recipe are manual.</p>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setIngredient({ id: "", name: "", unit: "g", kind: "ingredient", stockQty: 0, avgCostPaisa: 0, minQty: 0, active: true })}>Add ingredient</Button>
           <Button variant="outline" onClick={() => setMoveOpen(true)}>Stock movement</Button>
@@ -47,7 +47,7 @@ export function InventoryScreen() {
               <tr key={item.id} className="border-t border-border">
                 <td className="p-3 font-semibold">{item.name}<span className="block text-xs text-muted">{item.kind}</span></td>
                 <td className="p-3">{item.stockQty} {item.unit}</td>
-                <td className="p-3">{formatPkr(item.avgCostPaisa)}</td>
+                <td className="p-3">{formatUnitCost(item.avgCostPaisa)}</td>
                 <td className="p-3">{item.minQty || "—"}</td>
                 <td className="p-3">
                   <div className="flex gap-1">
@@ -139,7 +139,8 @@ function IngredientForm({ ingredient, onClose }: { ingredient: Ingredient | null
 function MovementForm({ open, onClose }: { open: boolean; onClose: () => void }) {
   const pos = usePos();
   const state = pos.state!;
-  const [ingredientId, setIngredientId] = useState(state.ingredients.find((item) => item.active)?.id ?? "");
+  const activeIngredients = state.ingredients.filter((item) => item.active);
+  const [ingredientId, setIngredientId] = useState("");
   const [type, setType] = useState<"purchase" | "out" | "wastage" | "adjustment">("purchase");
   const [qty, setQty] = useState("");
   const [entryUnit, setEntryUnit] = useState("");
@@ -149,40 +150,154 @@ function MovementForm({ open, onClose }: { open: boolean; onClose: () => void })
   const [partyId, setPartyId] = useState("");
   const [day, setDay] = useState(localDate());
   const [adjustmentIn, setAdjustmentIn] = useState(true);
-  const selected = state.ingredients.find((item) => item.id === ingredientId);
-  const stockUnit = selected?.unit ?? "g";
-  const effectiveEntryUnit = entryUnit || stockUnit;
+
+  // When modal opens, pick a valid active ingredient (avoids stale / empty id → "Ingredient not found")
+  useEffect(() => {
+    if (!open) return;
+    setDay(localDate());
+    setQty("");
+    setCost("");
+    setReason("");
+    setEntryUnit("");
+    const stillValid = activeIngredients.some((item) => item.id === ingredientId);
+    if (!stillValid) {
+      setIngredientId(activeIngredients[0]?.id ?? "");
+    }
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selected = activeIngredients.find((item) => item.id === ingredientId) ?? null;
+  const stockUnit = (selected?.unit ?? "g").trim().toLowerCase() || "g";
+  const effectiveEntryUnit = (entryUnit || stockUnit).trim().toLowerCase();
+
+  const parsedQty = parseQty(qty);
+  const converted =
+    parsedQty !== null && parsedQty > 0
+      ? convertToIngredientUnit(parsedQty, effectiveEntryUnit, stockUnit)
+      : null;
+  const totalPaidPaisa = type === "purchase" ? rupeesToPaisa(cost || "") : null;
+  // Precise unit cost (may be fractional, e.g. 4.5 paisa/g) — never round before dividing.
+  const unitCostPaisa =
+    converted && !converted.error && converted.qty > 0 && totalPaidPaisa !== null && totalPaidPaisa > 0
+      ? totalPaidPaisa / converted.qty
+      : 0;
+
+  // Preview new weighted average after this purchase (fractional precision)
+  let previewNewAvg: number | null = null;
+  if (selected && type === "purchase" && converted && !converted.error && totalPaidPaisa !== null && totalPaidPaisa > 0) {
+    const baseQty = Math.max(selected.stockQty, 0);
+    const purchaseQty = converted.qty;
+    const denom = baseQty + purchaseQty;
+    if (denom > 0) {
+      previewNewAvg = (baseQty * selected.avgCostPaisa + totalPaidPaisa) / denom;
+    }
+  }
+
   return (
     <Modal open={open} title="Stock movement" onClose={onClose}>
       <div className="grid gap-3">
-        <select className={controlClass} value={ingredientId} onChange={(event) => { setIngredientId(event.target.value); setEntryUnit(""); }}>
-          {state.ingredients.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name} ({item.unit})</option>)}
-        </select>
+        {activeIngredients.length === 0 ? (
+          <p className="note-box note-warn">
+            No active ingredients. First add an ingredient (e.g. Cheese, unit = g), then add stock.
+          </p>
+        ) : null}
+
+        <Field label="Ingredient">
+          <select
+            className={controlClass}
+            value={ingredientId}
+            onChange={(event) => {
+              setIngredientId(event.target.value);
+              setEntryUnit("");
+            }}
+          >
+            <option value="">— Select ingredient —</option>
+            {activeIngredients.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name} (stock unit: {item.unit}) · on hand {item.stockQty} {item.unit}
+              </option>
+            ))}
+          </select>
+        </Field>
+
         <select className={controlClass} value={type} onChange={(event) => setType(event.target.value as typeof type)}>
           <option value="purchase">Purchase in</option>
           <option value="out">Used / out</option>
           <option value="wastage">Wastage</option>
           <option value="adjustment">Adjustment</option>
         </select>
-        {type === "adjustment" ? <label className="text-sm"><input type="checkbox" checked={adjustmentIn} onChange={(event) => setAdjustmentIn(event.target.checked)} /> Add stock (uncheck to remove)</label> : null}
-        <div className="grid grid-cols-[1fr_6rem] gap-2">
-          <Field label="Quantity"><input className={controlClass} value={qty} onChange={(event) => setQty(event.target.value)} /></Field>
+        {type === "adjustment" ? (
+          <label className="text-sm">
+            <input type="checkbox" checked={adjustmentIn} onChange={(event) => setAdjustmentIn(event.target.checked)} /> Add stock
+            (uncheck to remove)
+          </label>
+        ) : null}
+
+        <div className="grid grid-cols-[1fr_7rem] gap-2">
+          <Field label="Quantity">
+            <input className={controlClass} inputMode="decimal" value={qty} onChange={(event) => setQty(event.target.value)} placeholder="e.g. 5" />
+          </Field>
           <Field label="Unit">
             <select className={controlClass} value={effectiveEntryUnit} onChange={(event) => setEntryUnit(event.target.value)}>
-              <option value="g">g</option>
+              <option value="g">g (grams)</option>
               <option value="kg">kg</option>
               <option value="ml">ml</option>
-              <option value="l">l</option>
+              <option value="l">litre (l)</option>
               <option value="pcs">pcs</option>
+              <option value="dozen">dozen</option>
+              <option value="packet">packet</option>
+              <option value="box">box</option>
             </select>
           </Field>
         </div>
-        <p className="text-xs text-muted">Stock is kept in {stockUnit}. Example: 5 kg → saves 5,000 g when unit is g.</p>
+
+        {/* Live conversion preview — stops kg/g confusion */}
+        {selected && converted && !converted.error ? (
+          <p className="rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm">
+            <strong>
+              {parsedQty} {effectiveEntryUnit}
+            </strong>{" "}
+            → will store{" "}
+            <strong>
+              {converted.qty} {stockUnit}
+            </strong>
+            {effectiveEntryUnit !== stockUnit ? (
+              <span className="text-muted"> (converted to ingredient stock unit)</span>
+            ) : null}
+          </p>
+        ) : null}
+        {converted?.error ? <p className="text-sm text-danger">{converted.error}</p> : null}
+        <p className="text-xs text-muted">
+          Ingredient is stocked in <strong>{stockUnit}</strong>. Recipe quantities must use the same unit. Example: cheese
+          in <strong>g</strong> → enter purchase as 5 kg → saves 5,000 g; recipe of 100 g deducts 100 g.
+        </p>
+
         {type === "purchase" ? (
-          <Field label="Total paid (Rs)" hint="Poori quantity ka bill — system khud per-unit cost nikalega">
-            <input className={controlClass} inputMode="decimal" value={cost} onChange={(event) => setCost(event.target.value)} placeholder="e.g. 5000 for 5 kg" />
+          <Field label="Total paid (Rs)" hint="Full invoice amount for this quantity — NOT the price per gram/kg.">
+            <input className={controlClass} inputMode="decimal" value={cost} onChange={(event) => setCost(event.target.value)} placeholder="e.g. 2000" />
           </Field>
         ) : null}
+
+        {/* Cost preview */}
+        {type === "purchase" && selected && unitCostPaisa > 0 && converted && !converted.error ? (
+          <div className="note-box note-ok">
+            <p>
+              Cost per {stockUnit}: <strong>{formatUnitCost(unitCostPaisa)}</strong>
+            </p>
+            <p>
+              Current avg: {formatUnitCost(selected.avgCostPaisa)}/{stockUnit}
+              {previewNewAvg !== null ? (
+                <>
+                  {" "}
+                  → new avg after save: <strong>{formatUnitCost(previewNewAvg)}/{stockUnit}</strong>
+                </>
+              ) : null}
+            </p>
+            <p className="text-xs opacity-80">
+              Orders will deduct recipe qty × this average cost automatically (e.g. using 100 {stockUnit} costs {formatPkr(Math.round(100 * (previewNewAvg ?? unitCostPaisa)))}).
+            </p>
+          </div>
+        ) : null}
+
         {type === "purchase" ? (
           <select className={controlClass} value={method} onChange={(event) => setMethod(event.target.value as typeof method)}>
             <option value="cash">Paid cash</option>
@@ -193,56 +308,79 @@ function MovementForm({ open, onClose }: { open: boolean; onClose: () => void })
         {method === "credit" ? (
           <select className={controlClass} value={partyId} onChange={(event) => setPartyId(event.target.value)}>
             <option value="">Supplier</option>
-            {state.parties.filter((party) => party.kind === "purchase").map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}
+            {state.parties
+              .filter((party) => party.kind === "purchase")
+              .map((party) => (
+                <option key={party.id} value={party.id}>
+                  {party.name}
+                </option>
+              ))}
           </select>
         ) : null}
-        <Field label="Reason"><input className={controlClass} value={reason} onChange={(event) => setReason(event.target.value)} /></Field>
+
+        <Field label="Reason">
+          <input className={controlClass} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="e.g. Weekly cheese purchase" />
+        </Field>
         <input className={controlClass} type="date" value={day} onChange={(event) => setDay(event.target.value)} />
-        <Button onClick={() => {
-          const parsed = parseQty(qty);
-          if (parsed === null || !(parsed > 0)) {
-            window.alert("Enter a valid quantity.");
-            return;
-          }
-          const converted = convertToIngredientUnit(parsed, effectiveEntryUnit, stockUnit);
-          if (converted.error) {
-            window.alert(converted.error);
-            return;
-          }
-          if (!(converted.qty > 0)) {
-            window.alert("Converted quantity must be greater than zero.");
-            return;
-          }
-          let unitCostPaisa = 0;
-          if (type === "purchase") {
-            const totalPaid = rupeesToPaisa(cost || "0");
-            if (totalPaid === null || totalPaid <= 0) {
-              window.alert("Enter total paid (Rs) for this whole quantity.");
+
+        <Button
+          onClick={() => {
+            if (!ingredientId || !selected) {
+              window.alert("Select an ingredient first. If the list is empty, add an ingredient before stocking.");
               return;
             }
-            // Total paid for the batch → cost per 1 stored unit (e.g. per gram)
-            unitCostPaisa = Math.round(totalPaid / converted.qty);
-            if (unitCostPaisa <= 0) {
-              window.alert("Total paid is too small for this quantity.");
+            if (parsedQty === null || parsedQty <= 0) {
+              window.alert("Enter a valid quantity (e.g. 5 or 1.5).");
               return;
             }
-          }
-          void act(
-            () =>
-              pos.postStock({
-                ingredientId,
-                type,
-                qty: converted.qty,
-                adjustmentIn,
-                unitCostPaisa,
-                reason,
-                partyId: partyId || null,
-                method: type === "purchase" ? method : "none",
-                day,
-              }),
-            "Stock updated",
-          ).then(onClose);
-        }}>Save movement</Button>
+            if (!converted || converted.error) {
+              window.alert(converted?.error ?? "Cannot convert units.");
+              return;
+            }
+            if (converted.qty <= 0) {
+              window.alert("Quantity must be greater than zero after conversion.");
+              return;
+            }
+            let unitCost = 0;
+            let totalCost: number | undefined;
+            if (type === "purchase") {
+              if (totalPaidPaisa === null || totalPaidPaisa <= 0) {
+                window.alert("Enter the total amount paid in Rs for this whole quantity (not per gram).");
+                return;
+              }
+              totalCost = totalPaidPaisa;
+              unitCost = totalPaidPaisa / converted.qty;
+              if (!(unitCost > 0)) {
+                window.alert("Unit cost came out zero — check quantity and total paid.");
+                return;
+              }
+            }
+            if (reason.trim().length < 3) {
+              window.alert("Write a short reason (at least 3 characters).");
+              return;
+            }
+            void act(
+              () =>
+                pos.postStock({
+                  ingredientId: selected.id,
+                  type,
+                  qty: converted.qty,
+                  adjustmentIn,
+                  unitCostPaisa: unitCost,
+                  totalCostPaisa: totalCost,
+                  reason: reason.trim(),
+                  partyId: partyId || null,
+                  method: type === "purchase" ? method : "none",
+                  day,
+                }),
+              "Stock updated",
+            ).then((ok) => {
+              if (ok !== null) onClose();
+            });
+          }}
+        >
+          Save movement
+        </Button>
       </div>
     </Modal>
   );
@@ -290,7 +428,10 @@ function RecipeForm({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (
     <Modal open={open} title="Recipe" onClose={onClose} wide>
       <div className="grid gap-3">
-        <p className="text-sm text-muted">Configure ingredient consumption per product size. Quantities use the ingredient unit (g, ml, pcs). Leave size blank for a default recipe.</p>
+        <p className="text-sm text-muted">
+          Recipe qty must be in the <strong>same unit the ingredient is stocked in</strong> (shown next to name).
+          Example: Cheese stocked in <strong>g</strong> → enter 100 for 100 g per serving. On each sale the system deducts that many grams and multiplies by the current average cost per gram.
+        </p>
         {state.recipes.length > 0 ? (
           <Field label="Load existing recipe">
             <select className={controlClass} value={recipeId} onChange={(event) => loadRecipe(event.target.value)}>
@@ -319,17 +460,21 @@ function RecipeForm({ open, onClose }: { open: boolean; onClose: () => void }) {
           </Field>
         ) : null}
         <p className="text-xs font-medium text-muted">Ingredients consumed</p>
-        {lines.map((line, index) => (
-          <div key={index} className="grid grid-cols-[1fr_6rem_auto] gap-2">
+        {lines.map((line, index) => {
+          const ing = state.ingredients.find((item) => item.id === line.ingredientId);
+          return (
+          <div key={index} className="grid grid-cols-[1fr_5rem_3rem_auto] gap-2 items-center">
             <select className={controlClass} value={line.ingredientId} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, ingredientId: event.target.value } : item))}>
               {state.ingredients.filter((item) => item.active).map((item) => (
                 <option key={item.id} value={item.id}>{item.name} ({item.unit})</option>
               ))}
             </select>
             <input className={controlClass} value={line.qty} inputMode="decimal" onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, qty: event.target.value } : item))} />
+            <span className="text-xs text-muted">{ing?.unit ?? ""}</span>
             <Button variant="ghost" onClick={() => setLines(lines.filter((_, i) => i !== index))}>Remove</Button>
           </div>
-        ))}
+          );
+        })}
         <Button variant="outline" onClick={() => setLines([...lines, { ingredientId: firstIng, qty: "1" }])}>Add ingredient</Button>
         <label className="text-sm"><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} /> Recipe is active</label>
         <Button onClick={() => {
@@ -609,13 +754,23 @@ export function CustomersScreen() {
             <tbody>
               {rows.map((customer) => {
                 const stats = customerStats(state, customer.id, now);
+                const isVip = stats.tags.includes("VIP");
                 return (
                   <tr key={customer.id} className="cursor-pointer border-t border-border" onClick={() => setDraft(customer)}>
-                    <td className="p-3 font-semibold">{customer.name}</td>
+                    <td className="p-3 font-semibold">
+                      <span className="inline-flex items-center gap-1.5">
+                        {customer.name}
+                        {isVip ? (
+                          <span className="vip-badge" title="VIP — 4+ completed orders">
+                            👑 VIP
+                          </span>
+                        ) : null}
+                      </span>
+                    </td>
                     <td className="p-3">{customer.phone || "—"}</td>
                     <td className="p-3">{stats.visits}</td>
                     <td className="p-3">{formatPkr(stats.spendPaisa)}</td>
-                    <td className="p-3">{stats.tags.join(", ") || "—"}</td>
+                    <td className="p-3">{stats.tags.filter((t) => t !== "VIP").join(", ") || "—"}</td>
                   </tr>
                 );
               })}
@@ -630,8 +785,8 @@ export function CustomersScreen() {
             <Field label="Phone"><input className={controlClass} value={draft.phone} onChange={(event) => setDraft({ ...draft, phone: event.target.value })} /></Field>
             <Field label="Address"><input className={controlClass} value={draft.address} onChange={(event) => setDraft({ ...draft, address: event.target.value })} /></Field>
             <Field label="Notes"><textarea className={controlClass} value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} /></Field>
-            <Field label="Manual tags" hint="Comma separated. VIP can also be earned from settings.">
-              <input className={controlClass} value={draft.manualTags.join(", ")} onChange={(event) => setDraft({ ...draft, manualTags: event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean) })} />
+            <Field label="Manual tags" hint="Comma separated. VIP is automatic after 4 completed orders and cannot be set manually.">
+              <input className={controlClass} value={draft.manualTags.filter((t) => t.toUpperCase() !== "VIP").join(", ")} onChange={(event) => setDraft({ ...draft, manualTags: event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean).filter((t) => t.toUpperCase() !== "VIP") })} />
             </Field>
             {draft.id ? <CustomerFacts id={draft.id} /> : null}
             <Button onClick={() => void act(() => pos.saveCustomer(draft), "Customer saved").then(() => setDraft(null))}>Save</Button>
@@ -645,7 +800,13 @@ export function CustomersScreen() {
 function CustomerFacts({ id }: { id: string }) {
   const state = usePos((store) => store.state)!;
   const stats = customerStats(state, id);
-  return <p className="text-sm text-muted">{stats.visits} completed orders · {stats.distinctDays} different days · favourite {stats.favourite || "—"} · last {stats.last ? formatWhen(stats.last, state.settings.dateFormat) : "—"}</p>;
+  const isVip = stats.tags.includes("VIP");
+  return (
+    <p className="text-sm text-muted">
+      {isVip ? <span className="vip-badge mr-1">👑 VIP</span> : null}
+      {stats.visits} completed orders · {stats.distinctDays} different days · favourite {stats.favourite || "—"} · last {stats.last ? formatWhen(stats.last, state.settings.dateFormat) : "—"}
+    </p>
+  );
 }
 
 export function ExpensesScreen() {
@@ -950,7 +1111,10 @@ export function SettingsScreen() {
         <Field label="Frequent: days window"><input className={controlClass} value={String(settings.tagFrequentDays)} onChange={(event) => setSettings({ ...settings, tagFrequentDays: Number(event.target.value) || 0 })} /></Field>
         <Field label="Frequent: minimum different days"><input className={controlClass} value={String(settings.tagFrequentMinDays)} onChange={(event) => setSettings({ ...settings, tagFrequentMinDays: Number(event.target.value) || 0 })} /></Field>
         <Field label="Inactive after days"><input className={controlClass} value={String(settings.tagInactiveDays)} onChange={(event) => setSettings({ ...settings, tagInactiveDays: Number(event.target.value) || 0 })} /></Field>
-        <Field label="VIP spend (Rs)"><input className={controlClass} value={String(settings.tagVipSpendPaisa / 100)} onChange={(event) => setSettings({ ...settings, tagVipSpendPaisa: Math.round(Number(event.target.value || 0) * 100) })} /></Field>
+        <p className="note-box note-warn">
+          👑 VIP is automatic after <strong>4 completed orders</strong> (cancelled bills do not count). The spend field below is legacy and no longer controls VIP.
+        </p>
+        <Field label="Legacy VIP spend (Rs) — unused"><input className={controlClass} value={String(settings.tagVipSpendPaisa / 100)} onChange={(event) => setSettings({ ...settings, tagVipSpendPaisa: Math.round(Number(event.target.value || 0) * 100) })} /></Field>
         <Button onClick={() => void act(() => pos.saveSettings(settings), "Settings saved")}>Save settings</Button>
       </section>
       <section className="grid gap-3 rounded-2xl border border-border bg-surface p-4">
@@ -1003,7 +1167,7 @@ export function SettingsScreen() {
       </section>
       <section className="rounded-2xl border border-border bg-surface p-4 text-sm">
         <h2 className="font-display text-2xl">About</h2>
-        <p className="mt-2">BeerFlow POS · by BeerFlow Technologies · v2.0.0</p>
+        <p className="mt-2">BeerFlow POS · by BeerFlow Technologies · v2.1.0</p>
         <p className="mt-2 text-muted">Currency is Pakistani rupees, stored as paisa so totals do not drift. Bills keep the names and prices from the moment they were saved.</p>
         {readInstall()?.mode !== "wizard" ? <p className="mt-2 text-muted">Starter logins are {STARTER_LOGINS.map((login) => `${login.username} / ${login.password}`).join(" and ")}. Change them before a real service.</p> : null}
         <div className="mt-4"><BeerflowMark /></div>

@@ -22,7 +22,7 @@ type ProductDraft = Omit<Product, "basePricePaisa" | "costPricePaisa" | "sizes" 
   addons: PriceRow[];
 };
 
-function blankProduct(categoryId: string, type: ProductType): ProductDraft {
+function blankProduct(categoryId: string, type: ProductType = "other"): ProductDraft {
   return {
     id: "",
     name: "",
@@ -33,15 +33,11 @@ function blankProduct(categoryId: string, type: ProductType): ProductDraft {
     imageId: null,
     basePrice: "",
     costPrice: "",
-    sizes: type === "pizza" ? [
-      { id: uid(), name: "Small", price: "300" },
-      { id: uid(), name: "Regular", price: "600" },
-      { id: uid(), name: "Large", price: "850" },
-      { id: uid(), name: "Jumbo", price: "1200" },
-    ] : [],
+    // Empty by default — owner adds sizes/options only if the item needs them.
+    sizes: [],
     flavours: [],
     addons: [],
-    halfAndHalf: type === "pizza",
+    halfAndHalf: false,
     trackStock: false,
     stockQty: 0,
     minStock: 0,
@@ -70,30 +66,52 @@ function fromProduct(product: Product): ProductDraft {
 export function MenuScreen() {
   const pos = usePos();
   const state = pos.state!;
-  const [tab, setTab] = useState<"products" | "deals">("deals");
+  const [tab, setTab] = useState<"products" | "deals" | "categories">("products");
   const [query, setQuery] = useState("");
   const [onlyActive, setOnlyActive] = useState(true);
   const [product, setProduct] = useState<ProductDraft | null>(null);
   const [deal, setDeal] = useState<Deal | null>(null);
+  const [newCatName, setNewCatName] = useState("");
+  const [newCatKind, setNewCatKind] = useState<"other" | "pizza" | "drinks" | "sides" | "extras" | "deals">("other");
   const photo = (id: string | null) => (id ? pos.imageUrls[id] ?? null : null);
   const products = state.products.filter((item) => (!onlyActive || item.active) && item.name.toLowerCase().includes(query.toLowerCase()));
   const deals = state.deals.filter((item) => (!onlyActive || item.active) && `${item.title} ${item.description}`.toLowerCase().includes(query.toLowerCase()));
+  const categories = [...state.categories].sort((a, b) => a.sort - b.sort);
+
+  function startNewItem() {
+    if (categories.filter((c) => c.active).length === 0) {
+      setTab("categories");
+      return;
+    }
+    const first = categories.find((c) => c.active) ?? categories[0]!;
+    setProduct(blankProduct(first.id, first.kind === "drinks" ? "drink" : first.kind === "pizza" ? "pizza" : first.kind === "sides" ? "side" : first.kind === "extras" ? "extra" : "other"));
+  }
+
   return (
     <div className="grid gap-4">
       <div className="card flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div>
           <p className="font-semibold">Menu & deals</p>
-          <p className="text-sm text-muted">Edit items, prices and photos. Sample catalog is ready to customize.</p>
+          <p className="text-sm text-muted">
+            {categories.length === 0
+              ? "Pehle categories banao, phir items aur deals add karo. Koi sample menu nahi — aap ka apna menu."
+              : "Apna menu, prices aur photos manage karo. Koi bhi restaurant item add kar sakte ho."}
+          </p>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <button className={`min-h-11 rounded-full px-4 text-sm font-semibold ${tab === "deals" ? "bg-accent text-accent-fg" : "bg-surface"}`} onClick={() => setTab("deals")}>Deals</button>
         <button className={`min-h-11 rounded-full px-4 text-sm font-semibold ${tab === "products" ? "bg-accent text-accent-fg" : "bg-surface"}`} onClick={() => setTab("products")}>Items</button>
-        <input className={`${controlClass} max-w-xs`} placeholder="Search" value={query} onChange={(event) => setQuery(event.target.value)} />
-        <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={onlyActive} onChange={(event) => setOnlyActive(event.target.checked)} /> On menu only</label>
-        <Button className="ml-auto" onClick={() => {
-          if (tab === "products") setProduct(blankProduct(state.categories.find((category) => category.kind === "sides")?.id ?? state.categories[0]!.id, "side"));
-          else setDeal({
+        <button className={`min-h-11 rounded-full px-4 text-sm font-semibold ${tab === "deals" ? "bg-accent text-accent-fg" : "bg-surface"}`} onClick={() => setTab("deals")}>Deals</button>
+        <button className={`min-h-11 rounded-full px-4 text-sm font-semibold ${tab === "categories" ? "bg-accent text-accent-fg" : "bg-surface"}`} onClick={() => setTab("categories")}>Categories</button>
+        {tab !== "categories" ? (
+          <>
+            <input className={`${controlClass} max-w-xs`} placeholder="Search" value={query} onChange={(event) => setQuery(event.target.value)} />
+            <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={onlyActive} onChange={(event) => setOnlyActive(event.target.checked)} /> On menu only</label>
+          </>
+        ) : null}
+        {tab === "products" ? <Button className="ml-auto" onClick={startNewItem}>Add item</Button> : null}
+        {tab === "deals" ? (
+          <Button className="ml-auto" onClick={() => setDeal({
             id: "",
             title: "",
             description: "",
@@ -106,26 +124,80 @@ export function MenuScreen() {
             validFrom: null,
             validTo: null,
             notes: "",
-          });
-        }}>Add {tab === "deals" ? "deal" : "item"}</Button>
+          })}>Add deal</Button>
+        ) : null}
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {tab === "deals" ? deals.map((item) => (
-          <button key={item.id} className="rounded-2xl border border-border bg-surface p-3 text-left" onClick={() => setDeal(structuredClone(item))}>
-            <DealPicture deal={item} products={state.products} url={photo(item.imageId)} className="h-24 w-full rounded-xl" imgClassName="h-24 w-full rounded-xl bg-surface-2 object-cover" />
-            <span className="mt-2 block font-semibold">{item.title}{item.active ? "" : " · off"}</span>
-            <span className="block text-sm text-muted">{item.description}</span>
-            <span className="mt-1 block text-accent">{formatPkr(item.pricePaisa)}</span>
-          </button>
-        )) : products.map((item) => (
-          <button key={item.id} className="rounded-2xl border border-border bg-surface p-3 text-left" onClick={() => setProduct(fromProduct(item))}>
-            <ProductPicture product={item} url={photo(item.imageId)} className="h-24 w-full rounded-xl" imgClassName="h-24 w-full rounded-xl bg-surface-2 object-cover" />
-            <span className="mt-2 block font-semibold">{item.name}{item.active ? "" : " · off"}</span>
-            <span className="block text-sm text-muted">{item.sku}</span>
-            <span className="mt-1 block text-accent">{formatPkr(item.sizes[0]?.pricePaisa ?? item.basePricePaisa)}</span>
-          </button>
-        ))}
-      </div>
+      {tab === "categories" ? (
+        <div className="grid gap-3">
+          <div className="card grid gap-3 p-4 sm:grid-cols-[1fr_auto_auto]">
+            <Field label="New category name">
+              <input className={controlClass} placeholder="e.g. Burgers, Biryani, Coffee" value={newCatName} onChange={(e) => setNewCatName(e.target.value)} />
+            </Field>
+            <Field label="POS tab group">
+              <select className={controlClass} value={newCatKind} onChange={(e) => setNewCatKind(e.target.value as typeof newCatKind)}>
+                <option value="other">General</option>
+                <option value="sides">Food / Sides</option>
+                <option value="drinks">Drinks</option>
+                <option value="pizza">Pizza</option>
+                <option value="extras">Extras</option>
+                <option value="deals">Deals</option>
+              </select>
+            </Field>
+            <div className="flex items-end">
+              <Button onClick={() => {
+                const name = newCatName.trim();
+                if (name.length < 2) return;
+                void act(() => pos.saveCategory({ name, kind: newCatKind }), "Category saved").then(() => setNewCatName(""));
+              }}>Add category</Button>
+            </div>
+          </div>
+          {categories.length === 0 ? (
+            <p className="rounded-2xl border border-dashed border-border px-4 py-10 text-center text-muted">
+              Abhi koi category nahi. Pehle ek category banao — phir us me items add kar sako ge.
+            </p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {categories.map((cat) => (
+                <div key={cat.id} className={`rounded-2xl border border-border bg-surface p-4 ${cat.active ? "" : "opacity-60"}`}>
+                  <p className="font-semibold">{cat.name}{cat.active ? "" : " · off"}</p>
+                  <p className="text-sm text-muted">Group: {cat.kind} · {state.products.filter((p) => p.categoryId === cat.id).length} items</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+      {tab === "products" || tab === "deals" ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {tab === "deals" ? (
+            deals.length === 0 ? (
+              <p className="col-span-full rounded-2xl border border-dashed border-border px-4 py-10 text-center text-muted">
+                Koi deal nahi. “Add deal” se combo / offer banao — kisi bhi items ke sath.
+              </p>
+            ) : deals.map((item) => (
+              <button key={item.id} className="rounded-2xl border border-border bg-surface p-3 text-left" onClick={() => setDeal(structuredClone(item))}>
+                <DealPicture deal={item} products={state.products} url={photo(item.imageId)} className="h-24 w-full rounded-xl" imgClassName="h-24 w-full rounded-xl bg-surface-2 object-cover" />
+                <span className="mt-2 block font-semibold">{item.title}{item.active ? "" : " · off"}</span>
+                <span className="block text-sm text-muted">{item.description}</span>
+                <span className="mt-1 block text-accent">{formatPkr(item.pricePaisa)}</span>
+              </button>
+            ))
+          ) : products.length === 0 ? (
+            <p className="col-span-full rounded-2xl border border-dashed border-border px-4 py-10 text-center text-muted">
+              {categories.length === 0
+                ? "Pehle Categories tab se category banao, phir item add karo."
+                : "Abhi koi item nahi. “Add item” se burger, biryani, coffee — jo bhi chaho — add karo."}
+            </p>
+          ) : products.map((item) => (
+            <button key={item.id} className="rounded-2xl border border-border bg-surface p-3 text-left" onClick={() => setProduct(fromProduct(item))}>
+              <ProductPicture product={item} url={photo(item.imageId)} className="h-24 w-full rounded-xl" imgClassName="h-24 w-full rounded-xl bg-surface-2 object-cover" />
+              <span className="mt-2 block font-semibold">{item.name}{item.active ? "" : " · off"}</span>
+              <span className="block text-sm text-muted">{item.sku}</span>
+              <span className="mt-1 block text-accent">{formatPkr(item.sizes[0]?.pricePaisa ?? item.basePricePaisa)}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <ProductForm draft={product} onClose={() => setProduct(null)} onChange={setProduct} />
       <DealForm deal={deal} onClose={() => setDeal(null)} onChange={setDeal} />
     </div>
@@ -184,7 +256,6 @@ function ProductForm({ draft, onClose, onChange }: { draft: ProductDraft | null;
   const pos = usePos();
   const state = pos.state!;
   if (!draft) return null;
-  const pizza = draft.type === "pizza";
   async function save() {
     const base = rupeesToPaisa(draft!.basePrice || "0");
     const cost = draft!.costPrice.trim() ? rupeesToPaisa(draft!.costPrice) : null;
@@ -233,28 +304,35 @@ function ProductForm({ draft, onClose, onChange }: { draft: ProductDraft | null;
               {state.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
             </select>
           </Field>
-          <Field label="Type">
+          <Field label="Type" hint="Sirf grouping / picture ke liye — har type par sizes aur options milte hain.">
             <select className={controlClass} value={draft.type} onChange={(event) => onChange({ ...draft, type: event.target.value as ProductType })}>
-              <option value="pizza">Pizza</option>
+              <option value="other">General item</option>
+              <option value="side">Food / Side</option>
               <option value="drink">Drink</option>
-              <option value="side">Side</option>
-              <option value="extra">Extra</option>
-              <option value="other">Other</option>
+              <option value="pizza">Pizza</option>
+              <option value="extra">Extra / Addon</option>
             </select>
           </Field>
-          <Field label="Selling price (Rs)" hint={pizza ? "Used only if no size is chosen." : undefined}>
+          <Field label="Selling price (Rs)" hint="Agar sizes add karoge to size wala price use hoga; warna yeh price.">
             <input className={controlClass} value={draft.basePrice} onChange={(event) => onChange({ ...draft, basePrice: event.target.value })} />
           </Field>
-          <Field label="Cost price (Rs)" hint="Optional. Used for profit if there is no recipe.">
+          <Field label="Cost price (Rs)" hint="Optional. Recipe na ho to profit is se nikalta hai.">
             <input className={controlClass} value={draft.costPrice} onChange={(event) => onChange({ ...draft, costPrice: event.target.value })} />
           </Field>
         </div>
         <Field label="Short description"><textarea className={controlClass} value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} /></Field>
         <ImagePick id={draft.imageId} onPick={(imageId) => onChange({ ...draft, imageId })} />
-        {pizza ? rows("Sizes and prices", draft.sizes, (sizes) => onChange({ ...draft, sizes })) : null}
-        {pizza ? rows("Flavours and upcharges", draft.flavours, (flavours) => onChange({ ...draft, flavours })) : null}
-        {pizza ? <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft.halfAndHalf} onChange={(event) => onChange({ ...draft, halfAndHalf: event.target.checked })} /> Allow half-and-half</label> : null}
-        {pizza || draft.type === "extra" ? addonRows(draft.addons, (addons) => onChange({ ...draft, addons }), state.ingredients) : null}
+        {rows("Sizes / variants (optional)", draft.sizes, (sizes) => onChange({ ...draft, sizes }))}
+        <p className="text-xs text-muted">e.g. Small / Regular / Large, Half / Full, 250 ml / 500 ml — jo bhi aap ke item par lage.</p>
+        {rows("Options (optional)", draft.flavours, (flavours) => onChange({ ...draft, flavours }))}
+        <p className="text-xs text-muted">e.g. Flavours, spice level, milk type — upcharge optional.</p>
+        {draft.flavours.length > 0 ? (
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={draft.halfAndHalf} onChange={(event) => onChange({ ...draft, halfAndHalf: event.target.checked })} />
+            Allow choosing two options (half-and-half style)
+          </label>
+        ) : null}
+        {addonRows(draft.addons, (addons) => onChange({ ...draft, addons }), state.ingredients)}
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft.trackStock} onChange={(event) => onChange({ ...draft, trackStock: event.target.checked })} /> Track finished stock for this item</label>
         {draft.trackStock ? (
           <div className="grid grid-cols-2 gap-2">
@@ -306,24 +384,64 @@ function DealForm({ deal, onClose, onChange }: { deal: Deal | null; onClose: () 
         <ImagePick id={deal.imageId} onPick={(imageId) => onChange({ ...deal, imageId })} />
         <div className="flex items-center justify-between">
           <p className="font-medium">Included items</p>
-          <Button variant="outline" onClick={() => onChange({ ...deal, slots: [...deal.slots, { id: uid(), label: "Pizza", mode: "pizza", productId: "prod-pizza", choiceProductIds: [], sizeName: "Regular", flavourRequired: true, qty: 1 }] })}>Add row</Button>
+          <Button variant="outline" onClick={() => onChange({
+            ...deal,
+            slots: [...deal.slots, {
+              id: uid(),
+              label: "Item",
+              mode: "fixed",
+              productId: state.products[0]?.id ?? null,
+              choiceProductIds: [],
+              sizeName: null,
+              flavourRequired: false,
+              qty: 1,
+            }],
+          })}>Add row</Button>
         </div>
         {deal.slots.map((slot) => (
           <div key={slot.id} className="grid gap-2 rounded-xl bg-surface-2 p-3">
             <div className="grid gap-2 sm:grid-cols-4">
-              <input className={controlClass} value={slot.label} onChange={(event) => patchSlot(slot.id, { label: event.target.value })} />
-              <select className={controlClass} value={slot.mode} onChange={(event) => patchSlot(slot.id, { mode: event.target.value as DealSlot["mode"] })}>
-                <option value="pizza">Pizza choice</option>
+              <input className={controlClass} placeholder="Label" value={slot.label} onChange={(event) => patchSlot(slot.id, { label: event.target.value })} />
+              <select className={controlClass} value={slot.mode} onChange={(event) => {
+                const mode = event.target.value as DealSlot["mode"];
+                patchSlot(slot.id, {
+                  mode,
+                  flavourRequired: mode === "pizza",
+                  productId: mode === "fixed" ? (slot.productId || state.products[0]?.id || null) : mode === "pizza" ? (state.products.find((p) => p.type === "pizza")?.id ?? slot.productId) : null,
+                });
+              }}>
                 <option value="fixed">Fixed item</option>
-                <option value="choice">Guest chooses</option>
+                <option value="choice">Guest chooses from list</option>
+                <option value="pizza">Item with size + options</option>
               </select>
               <input className={controlClass} inputMode="numeric" value={String(slot.qty)} onChange={(event) => patchSlot(slot.id, { qty: Number(event.target.value) || 1 })} />
               <Button variant="ghost" onClick={() => onChange({ ...deal, slots: deal.slots.filter((item) => item.id !== slot.id) })}>Remove</Button>
             </div>
-            {slot.mode === "pizza" ? <input className={controlClass} placeholder="Size name, e.g. Regular" value={slot.sizeName ?? ""} onChange={(event) => patchSlot(slot.id, { sizeName: event.target.value, flavourRequired: true, productId: "prod-pizza" })} /> : null}
+            {slot.mode === "pizza" ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <select className={controlClass} value={slot.productId ?? ""} onChange={(event) => patchSlot(slot.id, { productId: event.target.value || null })}>
+                  <option value="">Pick item</option>
+                  {state.products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+                </select>
+                <input className={controlClass} placeholder="Size name (optional), e.g. Regular" value={slot.sizeName ?? ""} onChange={(event) => patchSlot(slot.id, { sizeName: event.target.value || null, flavourRequired: true })} />
+              </div>
+            ) : null}
             {slot.mode === "fixed" ? (
-              <select className={controlClass} value={slot.productId ?? ""} onChange={(event) => patchSlot(slot.id, { productId: event.target.value })}>
+              <select className={controlClass} value={slot.productId ?? ""} onChange={(event) => patchSlot(slot.id, { productId: event.target.value || null })}>
                 <option value="">Pick item</option>
+                {state.products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+              </select>
+            ) : null}
+            {slot.mode === "choice" ? (
+              <select
+                className={controlClass}
+                multiple
+                value={slot.choiceProductIds}
+                onChange={(event) => {
+                  const ids = Array.from(event.target.selectedOptions).map((o) => o.value);
+                  patchSlot(slot.id, { choiceProductIds: ids });
+                }}
+              >
                 {state.products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
               </select>
             ) : null}

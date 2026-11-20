@@ -253,11 +253,20 @@ function Glyph({ kind }: { kind: FoodKind }) {
   return <Draw />;
 }
 
+/** Soft terracotta-amber glow behind the food — warm cafe palette. */
 function Backdrop({ width, height }: { width: number; height: number }) {
+  const r = Math.min(width, height) * 0.48;
   return (
     <>
-      <rect width={width} height={height} rx="10" fill="#2a261f" />
-      <circle cx={width / 2} cy={height / 2} r={Math.min(width, height) * 0.46} fill="#e23d32" opacity="0.1" />
+      <defs>
+        <radialGradient id="bf-food-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0" stopColor="#E07A3D" stopOpacity="0.42" />
+          <stop offset="0.65" stopColor="#C45D2A" stopOpacity="0.2" />
+          <stop offset="1" stopColor="#F0B429" stopOpacity="0.05" />
+        </radialGradient>
+      </defs>
+      <circle cx={width / 2} cy={height / 2} r={r} fill="url(#bf-food-glow)" />
+      <circle cx={width / 2} cy={height / 2} r={r} fill="none" stroke="#F0B429" strokeOpacity="0.22" strokeWidth="0.8" />
     </>
   );
 }

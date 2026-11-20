@@ -1,3 +1,4 @@
+import { businessDate } from "./money.ts";
 import { create } from "zustand";
 import { exportBackup, importBackup, initDatabase, loadImages, resetDatabase, saveImage, updateState, type InstallSetup } from "./db.ts";
 import { uninstallEverything, writeInstall } from "./lifecycle.ts";
@@ -15,6 +16,7 @@ import {
   removeProduct,
   reopenDay,
   restoreParty,
+  saveCategory,
   saveCustomer,
   saveDeal,
   saveExpense,
@@ -26,7 +28,7 @@ import {
   voidExpense,
 } from "./logic.ts";
 import { hashPassword, verifyPassword } from "./password.ts";
-import type { AppState, Cart, Customer, Deal, Expense, Ingredient, PayMethod, Product, Recipe, Result, Role, Session, Settings } from "./types.ts";
+import type { AppState, Cart, CategoryKind, Customer, Deal, Expense, Ingredient, PayMethod, Product, Recipe, Result, Role, Session, Settings } from "./types.ts";
 import { uid } from "./money.ts";
 
 const SESSION_KEY = "bf-session";
@@ -48,6 +50,7 @@ interface PosStore {
   cancel: (orderId: string, reason: string) => Promise<void>;
   saveProduct: (product: Product) => Promise<string>;
   removeProduct: (id: string) => Promise<boolean>;
+  saveCategory: (input: { id?: string; name: string; kind: CategoryKind; sort?: number; active?: boolean }) => Promise<string>;
   saveDeal: (deal: Deal) => Promise<string>;
   removeDeal: (id: string) => Promise<boolean>;
   saveCustomer: (customer: Customer) => Promise<void>;
@@ -261,6 +264,10 @@ export const usePos = create<PosStore>((set, get) => ({
     const value = await apply((current) => removeProduct(current, id, session.displayName), set);
     return value.archived;
   },
+  saveCategory: async (input) => {
+    const session = owner(get().session);
+    return apply((current) => saveCategory(current, input, session.displayName), set);
+  },
   saveDeal: async (deal) => {
     const session = owner(get().session);
     return apply((current) => saveDeal(current, deal, session.displayName), set);
@@ -405,7 +412,7 @@ export const usePos = create<PosStore>((set, get) => ({
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "")
       .slice(0, 40);
-    const day = new Date().toISOString().slice(0, 10);
+    const day = businessDate();
     anchor.download = `${shop}-backup-${day}.json`;
     anchor.click();
     URL.revokeObjectURL(anchor.href);

@@ -78,7 +78,7 @@ export function PosScreen({ onDone }: { onDone: (orderId: string, changePaisa: n
                   key={product.id}
                   className="rounded-2xl border border-border bg-surface p-3 text-left"
                   onClick={() => {
-                    if (product.type === "pizza" || product.sizes.length > 0) setPizza(product);
+                    if (product.sizes.length > 0 || product.flavours.length > 0 || product.addons.length > 0) setPizza(product);
                     else void addLine({ key: uid(), kind: "product", refId: product.id, qty: 1, notes: "", config: {} });
                   }}
                 >
@@ -251,41 +251,49 @@ function PizzaDialog({ product, onClose, onAdd }: { product: Product | null; onC
   const [qty, setQty] = useState(1);
   const [notes, setNotes] = useState("");
   const price = useMemo(() => {
-    if (!product || !size) return 0;
-    const sizePrice = product.sizes.find((item) => item.name === size)?.pricePaisa ?? 0;
+    if (!product) return 0;
+    const needsSize = product.sizes.length > 0;
+    if (needsSize && !size) return 0;
+    const sizePrice = needsSize
+      ? (product.sizes.find((item) => item.name === size)?.pricePaisa ?? 0)
+      : product.basePricePaisa;
     const extra = flavours.reduce((sum, name) => sum + (product.flavours.find((item) => item.name === name)?.pricePaisa ?? 0), 0);
     const addon = addons.reduce((sum, id) => sum + (product.addons.find((item) => item.id === id)?.pricePaisa ?? 0), 0);
     return (sizePrice + extra + addon) * qty;
   }, [product, size, flavours, addons, qty]);
   return (
-    <Modal open={!!product} title={product?.name ?? "Pizza"} onClose={onClose}>
+    <Modal open={!!product} title={product?.name ?? "Item"} onClose={onClose}>
       {product ? (
         <div className="grid gap-4">
-          <div className="grid grid-cols-2 gap-2">
-            {product.sizes.map((item) => (
-              <button key={item.id} className={`min-h-11 rounded-xl px-3 text-sm font-semibold ${size === item.name ? "bg-accent text-accent-fg" : "bg-surface-2"}`} onClick={() => setSize(item.name)}>
-                {item.name} · {formatPkr(item.pricePaisa)}
-              </button>
-            ))}
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            {product.flavours.map((flavour) => {
-              const on = flavours.includes(flavour.name);
-              return (
-                <button key={flavour.id} className={`min-h-11 rounded-xl px-3 text-sm ${on ? "bg-primary text-primary-fg" : "bg-surface-2"}`} onClick={() => {
-                  setFlavours((current) => {
-                    if (current.includes(flavour.name)) return current.filter((name) => name !== flavour.name);
-                    if (!product.halfAndHalf) return [flavour.name];
-                    return [...current, flavour.name].slice(-2);
-                  });
-                }}>{flavour.name}</button>
-              );
-            })}
-          </div>
-          {product.halfAndHalf ? <p className="text-xs text-muted">Tap two flavours for half-and-half. Upcharges add once each, not the full second pizza.</p> : null}
+          {product.sizes.length > 0 ? (
+            <div className="grid grid-cols-2 gap-2">
+              {product.sizes.map((item) => (
+                <button key={item.id} className={`min-h-11 rounded-xl px-3 text-sm font-semibold ${size === item.name ? "bg-accent text-accent-fg" : "bg-surface-2"}`} onClick={() => setSize(item.name)}>
+                  {item.name} · {formatPkr(item.pricePaisa)}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {product.flavours.length > 0 ? (
+            <div className="grid grid-cols-2 gap-2">
+              {product.flavours.map((flavour) => {
+                const on = flavours.includes(flavour.name);
+                return (
+                  <button key={flavour.id} className={`min-h-11 rounded-xl px-3 text-sm ${on ? "bg-primary text-primary-fg" : "bg-surface-2"}`} onClick={() => {
+                    setFlavours((current) => {
+                      if (current.includes(flavour.name)) return current.filter((name) => name !== flavour.name);
+                      if (!product.halfAndHalf) return [flavour.name];
+                      return [...current, flavour.name].slice(-2);
+                    });
+                  }}>{flavour.name}</button>
+                );
+              })}
+            </div>
+          ) : null}
+          {product.halfAndHalf ? <p className="text-xs text-muted">Do options select kar sakte ho (half-and-half style).</p> : null}
           {product.addons.map((addon) => (
             <label key={addon.id} className="flex min-h-11 items-center justify-between gap-3 rounded-xl bg-surface-2 px-3 text-sm">
-              <span>{addon.name} · {addon.pricePaisa ? formatPkr(addon.pricePaisa) : "No upcharge yet"}</span>
+              <span>{addon.name} · {addon.pricePaisa ? formatPkr(addon.pricePaisa) : "No upcharge"}</span>
               <input type="checkbox" checked={addons.includes(addon.id)} onChange={() => setAddons((current) => current.includes(addon.id) ? current.filter((id) => id !== addon.id) : [...current, addon.id])} />
             </label>
           ))}
@@ -297,8 +305,20 @@ function PizzaDialog({ product, onClose, onAdd }: { product: Product | null; onC
               <button className="grid size-11 place-items-center rounded-xl bg-surface-2" onClick={() => setQty((value) => value + 1)}><Plus /></button>
             </div>
             <Button onClick={() => {
-              if (!size || flavours.length === 0) return;
-              void onAdd({ key: uid(), kind: "product", refId: product.id, qty, notes, config: { sizeName: size, flavours, addonIds: addons } });
+              if (product.sizes.length > 0 && !size) return;
+              if (product.flavours.length > 0 && flavours.length === 0) return;
+              void onAdd({
+                key: uid(),
+                kind: "product",
+                refId: product.id,
+                qty,
+                notes,
+                config: {
+                  sizeName: size || undefined,
+                  flavours: flavours.length ? flavours : undefined,
+                  addonIds: addons.length ? addons : undefined,
+                },
+              });
               setSize(""); setFlavours([]); setAddons([]); setQty(1); setNotes(""); onClose();
             }}>Add {formatPkr(price)}</Button>
           </div>
@@ -310,31 +330,43 @@ function PizzaDialog({ product, onClose, onAdd }: { product: Product | null; onC
 
 function DealDialog({ deal, onClose, onAdd }: { deal: Deal | null; onClose: () => void; onAdd: (line: CartLine) => Promise<void> }) {
   const state = usePos((store) => store.state)!;
-  const pizza = state.products.find((product) => product.id === "prod-pizza");
   const [flavours, setFlavours] = useState<Record<string, string>>({});
   const [choices, setChoices] = useState<Record<string, string>>({});
-  const [addons, setAddons] = useState<string[]>([]);
   const [qty, setQty] = useState(1);
   if (!deal) return <Modal open={false} title="Deal" onClose={onClose}><span /></Modal>;
-  const extra = (pizza?.addons ?? []).filter((addon) => addons.includes(addon.id)).reduce((sum, addon) => sum + addon.pricePaisa, 0);
-  const flavourExtra = Object.values(flavours).reduce((sum, name) => sum + (pizza?.flavours.find((item) => item.name === name)?.pricePaisa ?? 0), 0);
+  // Upcharges from options on sized slots (any product — not pizza-only).
+  const flavourExtra = deal.slots.reduce((sum, slot) => {
+    if (slot.mode !== "pizza") return sum;
+    const product = state.products.find((p) => p.id === slot.productId);
+    if (!product) return sum;
+    let add = 0;
+    for (let i = 0; i < slot.qty; i += 1) {
+      const name = flavours[`${slot.id}-${i}`];
+      if (name) add += product.flavours.find((f) => f.name === name)?.pricePaisa ?? 0;
+    }
+    return sum + add;
+  }, 0);
   return (
     <Modal open title={deal.title} onClose={onClose} wide>
       <p className="text-sm text-muted">{deal.description}</p>
-      <p className="mt-1 font-display text-3xl text-accent">{formatPkr(deal.pricePaisa + extra + flavourExtra)}</p>
-      <p className="mb-3 text-xs text-muted">The deal price already includes the items below. Flavour upcharges are added only if you set them on the pizza.</p>
+      <p className="mt-1 font-display text-3xl text-accent">{formatPkr(deal.pricePaisa + flavourExtra)}</p>
+      <p className="mb-3 text-xs text-muted">Deal price includes the items below. Option upcharges add on top if set on the item.</p>
       <div className="grid gap-3">
-        {deal.slots.map((slot) => (
+        {deal.slots.map((slot) => {
+          const slotProduct = state.products.find((p) => p.id === slot.productId);
+          return (
           <div key={slot.id} className="rounded-xl bg-surface-2 p-3">
             <p className="font-semibold">{slot.qty > 1 ? `${slot.qty} × ` : ""}{slot.label}</p>
             {slot.mode === "pizza" ? (
               <div className="mt-2 grid gap-2">
-                {Array.from({ length: slot.qty }, (_, index) => (
+                {slotProduct?.flavours.length ? Array.from({ length: slot.qty }, (_, index) => (
                   <select key={index} className={controlClass} value={flavours[`${slot.id}-${index}`] ?? ""} onChange={(event) => setFlavours((current) => ({ ...current, [`${slot.id}-${index}`]: event.target.value }))}>
-                    <option value="">Choose flavour</option>
-                    {pizza?.flavours.map((flavour) => <option key={flavour.id} value={flavour.name}>{flavour.name}{slot.sizeName ? ` · ${slot.sizeName}` : ""}</option>)}
+                    <option value="">Choose option</option>
+                    {slotProduct.flavours.map((flavour) => <option key={flavour.id} value={flavour.name}>{flavour.name}{slot.sizeName ? ` · ${slot.sizeName}` : ""}</option>)}
                   </select>
-                ))}
+                )) : (
+                  <p className="text-sm text-muted">{slotProduct?.name ?? "Item"}{slot.sizeName ? ` · ${slot.sizeName}` : ""}</p>
+                )}
               </div>
             ) : null}
             {slot.mode === "choice" ? (
@@ -348,13 +380,8 @@ function DealDialog({ deal, onClose, onAdd }: { deal: Deal | null; onClose: () =
             ) : null}
             {slot.mode === "fixed" ? <p className="text-sm text-muted">{state.products.find((item) => item.id === slot.productId)?.name}</p> : null}
           </div>
-        ))}
-        {(pizza?.addons ?? []).map((addon) => (
-          <label key={addon.id} className="flex items-center justify-between rounded-xl bg-surface-2 px-3 py-2 text-sm">
-            <span>{addon.name}</span>
-            <input type="checkbox" checked={addons.includes(addon.id)} onChange={() => setAddons((current) => current.includes(addon.id) ? current.filter((id) => id !== addon.id) : [...current, addon.id])} />
-          </label>
-        ))}
+          );
+        })}
       </div>
       <div className="mt-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -366,10 +393,19 @@ function DealDialog({ deal, onClose, onAdd }: { deal: Deal | null; onClose: () =
           const picks: LinePick[] = [];
           for (const slot of deal.slots) {
             if (slot.mode === "pizza") {
+              const product = state.products.find((p) => p.id === slot.productId);
               for (let index = 0; index < slot.qty; index += 1) {
-                const flavour = flavours[`${slot.id}-${index}`];
-                if (!flavour) return;
-                picks.push({ slotId: slot.id, label: slot.label, productId: slot.productId ?? "prod-pizza", productName: "Pizza", sizeName: slot.sizeName, flavour, qty: 1 });
+                const flavour = flavours[`${slot.id}-${index}`] ?? null;
+                if (product?.flavours.length && !flavour) return;
+                picks.push({
+                  slotId: slot.id,
+                  label: slot.label,
+                  productId: slot.productId ?? product?.id ?? "",
+                  productName: product?.name ?? slot.label,
+                  sizeName: slot.sizeName,
+                  flavour,
+                  qty: 1,
+                });
               }
             } else if (slot.mode === "fixed" && slot.productId) {
               const product = state.products.find((item) => item.id === slot.productId);
@@ -381,9 +417,9 @@ function DealDialog({ deal, onClose, onAdd }: { deal: Deal | null; onClose: () =
               picks.push({ slotId: slot.id, label: slot.label, productId, productName: product?.name ?? slot.label, sizeName: null, flavour: null, qty: slot.qty });
             }
           }
-          void onAdd({ key: uid(), kind: "deal", refId: deal.id, qty, notes: "", config: { picks, addonIds: addons } });
-          setFlavours({}); setChoices({}); setAddons([]); setQty(1); onClose();
-        }}>Add deal</Button>
+          void onAdd({ key: uid(), kind: "deal", refId: deal.id, qty, notes: "", config: { picks } });
+          setFlavours({}); setChoices({}); setQty(1); onClose();
+        }}>Add deal {formatPkr((deal.pricePaisa + flavourExtra) * qty)}</Button>
       </div>
     </Modal>
   );

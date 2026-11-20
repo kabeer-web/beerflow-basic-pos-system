@@ -1,4 +1,4 @@
-import { assertPaisa, dateAtNoon, inDateRange, localDate, roundQty, uid } from "./money.ts";
+import { assertPaisa, businessDate, dateAtNoon, inDateRange, localDate, roundQty, uid } from "./money.ts";
 import { emptyCart } from "./seed.ts";
 import type {
   AppState,
@@ -21,6 +21,52 @@ import type {
   StockMovement,
 } from "./types.ts";
 
+/** Completed orders required for automatic VIP status. */
+export const VIP_ORDER_THRESHOLD = 4;
+
+/**
+ * Normalize a Pakistani / local phone for matching.
+ * Strips spaces, dashes, parentheses; maps +92 / 0092 / 92 prefixes to leading 0.
+ * Returns empty string if nothing useful remains.
+ */
+export function normalizePhone(raw: string): string {
+  let s = (raw ?? "").trim().replace(/[\s\-().]/g, "");
+  if (!s) return "";
+  if (s.startsWith("+92")) s = "0" + s.slice(3);
+  else if (s.startsWith("0092")) s = "0" + s.slice(4);
+  else if (s.startsWith("92") && s.length >= 12) s = "0" + s.slice(2);
+  // Keep only digits
+  s = s.replace(/\D/g, "");
+  return s;
+}
+
+/** Case-fold and collapse internal whitespace for name matching. */
+export function normalizeName(raw: string): string {
+  return (raw ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Exact customer identity = normalized name + normalized phone.
+ * Both must match. Phone-only or name-only is never enough.
+ */
+/**
+ * Exact customer identity = normalized name + normalized phone.
+ * Both must be non-empty and equal. Name-only (empty phones) never merges.
+ */
+export function findCustomerByIdentity(
+  customers: Customer[],
+  name: string,
+  phone: string,
+): Customer | undefined {
+  const nName = normalizeName(name);
+  const nPhone = normalizePhone(phone);
+  // Require BOTH name and phone — empty phone must not merge walk-ins by name alone.
+  if (!nName || !nPhone) return undefined;
+  return customers.find(
+    (c) => normalizeName(c.name) === nName && normalizePhone(c.phone) === nPhone,
+  );
+}
+
 /**
  * Accounting rules (shop point of view):
  * - Sale party balance = what they owe us. Credit sale increases it. Their payment decreases it.
@@ -37,22 +83,75 @@ function fail(error: string): Result<never> {
   return { ok: false, error };
 }
 
-/** Convert a quantity entered in entryUnit into the ingredient's stored unit. */
+/** Normalize common unit spellings to a short canonical key. */
+function canonicalUnit(raw: string): string {
+  const u = raw.trim().toLowerCase().replace(/\./g, "");
+  const aliases: Record<string, string> = {
+    g: "g",
+    gram: "g",
+    grams: "g",
+    kg: "kg",
+    kilo: "kg",
+    kilogram: "kg",
+    kilograms: "kg",
+    ml: "ml",
+    millilitre: "ml",
+    millilitres: "ml",
+    milliliter: "ml",
+    milliliters: "ml",
+    l: "l",
+    lt: "l",
+    litre: "l",
+    liters: "l",
+    liter: "l",
+    litres: "l",
+    pcs: "pcs",
+    pc: "pcs",
+    piece: "pcs",
+    pieces: "pcs",
+    dozen: "dozen",
+    doz: "dozen",
+    packet: "packet",
+    pkt: "packet",
+    pack: "packet",
+    box: "box",
+  };
+  return aliases[u] ?? u;
+}
+
+/**
+ * Convert a quantity entered in entryUnit into the ingredient's stored unit.
+ * Allowed cross-unit families only:
+ *   Mass: g ↔ kg (1 kg = 1000 g)
+ *   Volume: ml ↔ l (1 l = 1000 ml)
+ *   Count: pcs ↔ dozen (1 dozen = 12 pcs)
+ * packet and box only match themselves — never convert to/from pcs or each other.
+ */
 export function convertToIngredientUnit(qty: number, entryUnit: string, ingredientUnit: string): { qty: number; error?: string } {
-  const from = entryUnit.trim().toLowerCase();
-  const to = ingredientUnit.trim().toLowerCase();
+  const from = canonicalUnit(entryUnit);
+  const to = canonicalUnit(ingredientUnit);
   if (!(qty > 0)) return { qty: 0, error: "Quantity must be greater than zero." };
-  if (from === to) return { qty };
-  const mass: Record<string, number> = { g: 1, gram: 1, grams: 1, kg: 1000, kilogram: 1000, kilograms: 1000 };
-  const volume: Record<string, number> = { ml: 1, millilitre: 1, millilitres: 1, l: 1000, litre: 1000, liters: 1000, liter: 1000 };
-  const piece: Record<string, number> = { pcs: 1, pc: 1, piece: 1, pieces: 1 };
+  if (from === to) return { qty: roundQty(qty) };
+  // packet / box: only same-unit allowed (already handled above)
+  if (from === "packet" || to === "packet" || from === "box" || to === "box") {
+    return {
+      qty: 0,
+      error: "Packet/box ka conversion nahi ho sakta, stock unit wahi select karo.",
+    };
+  }
+  const mass: Record<string, number> = { g: 1, kg: 1000 };
+  const volume: Record<string, number> = { ml: 1, l: 1000 };
+  const piece: Record<string, number> = { pcs: 1, dozen: 12 };
   const families = [mass, volume, piece];
   for (const family of families) {
     if (from in family && to in family) {
       return { qty: roundQty((qty * family[from]) / family[to]) };
     }
   }
-  return { qty: 0, error: `Cannot convert ${entryUnit} to ${ingredientUnit}. Use a compatible unit.` };
+  return {
+    qty: 0,
+    error: `Cannot convert ${entryUnit} → ${ingredientUnit}. Use matching families only: kg/g, litre/ml, or pcs/dozen.`,
+  };
 }
 
 function audit(state: AppState, actor: string, action: string, detail: string) {
@@ -140,28 +239,54 @@ export function priceConfig(state: AppState, kind: CartLine["kind"], refId: stri
   if (!product) return { error: "That item is no longer on the menu." };
   if (!product.active) return { error: `${product.name} is off the menu.` };
   let price = product.basePricePaisa;
-  if (product.type === "pizza" || product.sizes.length > 0) {
+  // Sizes/variants apply to any product that has them — not pizza-only.
+  if (product.sizes.length > 0) {
     if (!config.sizeName) return { error: `Choose a size for ${product.name}.` };
     const size = product.sizes.find((item) => item.name === config.sizeName);
     if (!size) return { error: `${config.sizeName} is not a size of ${product.name}.` };
     price = size.pricePaisa;
   }
-  if (product.basePricePaisa === 0 && product.sizes.length === 0 && product.type === "drink") {
+  if (product.basePricePaisa === 0 && product.sizes.length === 0) {
     return { error: `Set a selling price for ${product.name} before selling it on its own.` };
   }
   const flavours = config.flavours ?? [];
-  if (product.type === "pizza" && flavours.length === 0) return { error: `Choose a flavour for ${product.name}.` };
-  if (flavours.length > 1 && !product.halfAndHalf) return { error: `${product.name} is not half-and-half.` };
-  if (flavours.length > 2) return { error: "Pick at most two flavours." };
+  // Options required only when the product actually lists them.
+  if (product.flavours.length > 0 && flavours.length === 0) {
+    return { error: `Choose an option for ${product.name}.` };
+  }
+  if (flavours.length > 1 && !product.halfAndHalf) return { error: `${product.name} does not allow two options.` };
+  if (flavours.length > 2) return { error: "Pick at most two options." };
   for (const name of flavours) {
     const upcharge = flavourExtra(product, name);
-    if (upcharge === null) return { error: `Flavour “${name}” is not on the menu.` };
+    if (upcharge === null) return { error: `Option “${name}” is not on the menu.` };
     price += upcharge;
   }
   for (const addonId of config.addonIds ?? []) {
     const addon = product.addons.find((item) => item.id === addonId);
     if (!addon) return { error: "An extra was removed from this item." };
     price += addon.pricePaisa;
+  }
+  for (const sel of config.modifierSelections ?? []) {
+    const group = (product.modifierGroups ?? []).find((g) => g.id === sel.groupId);
+    if (!group || !group.active) return { error: "A customization group is no longer available." };
+    if (group.required && sel.optionIds.length < group.minSelections) {
+      return { error: `Select at least ${group.minSelections} option(s) for ${group.name}.` };
+    }
+    if (sel.optionIds.length > group.maxSelections) {
+      return { error: `Select at most ${group.maxSelections} option(s) for ${group.name}.` };
+    }
+    for (const optId of sel.optionIds) {
+      const opt = group.options.find((o) => o.id === optId && o.active);
+      if (!opt) return { error: `An option in "${group.name}" is no longer available.` };
+      price += opt.pricePaisa;
+    }
+  }
+  for (const group of product.modifierGroups ?? []) {
+    if (!group.active || !group.required) continue;
+    const sel = (config.modifierSelections ?? []).find((s) => s.groupId === group.id);
+    if (!sel || sel.optionIds.length < group.minSelections) {
+      return { error: `Choose required options for ${group.name}.` };
+    }
   }
   return { price };
 }
@@ -179,6 +304,17 @@ export function describeLine(state: AppState, line: CartLine): string {
   for (const addonId of line.config.addonIds ?? []) {
     const addon = addonLookup(state, addonId);
     if (addon) bits.push(addon.name);
+  }
+  if (line.kind === "product") {
+    const product = productById(state, line.refId);
+    for (const sel of line.config.modifierSelections ?? []) {
+      const group = (product?.modifierGroups ?? []).find((g) => g.id === sel.groupId);
+      if (!group) continue;
+      for (const optId of sel.optionIds) {
+        const opt = group.options.find((o) => o.id === optId);
+        if (opt) bits.push(opt.name);
+      }
+    }
   }
   if (line.notes.trim()) bits.push(line.notes.trim());
   return bits.join(" · ");
@@ -259,9 +395,60 @@ interface CheckoutInput {
   at?: string;
 }
 
-function recipeForProduct(state: AppState, productId: string, sizeName: string | null): Recipe | undefined {
-  const matches = state.recipes.filter((recipe) => recipe.active && recipe.productId === productId);
-  return matches.find((recipe) => recipe.sizeName === sizeName) ?? matches.find((recipe) => !recipe.sizeName);
+/**
+ * Resolve the recipe for a product + size.
+ * Prefer an exact size match. Fall back to a size-less recipe only when no size-specific
+ * recipes exist for the product at all. If size-specific recipes exist but the chosen size
+ * is missing, return undefined so the caller can surface a validation warning.
+ */
+/**
+ * Resolve the best recipe for a product configuration.
+ * Priority: product+size+flavour > product+size > product+flavour > product only.
+ */
+function recipeForProduct(
+  state: AppState,
+  productId: string,
+  sizeName: string | null,
+  flavourName?: string | null,
+): Recipe | undefined {
+  const matches = state.recipes.filter(
+    (r) => r.active && r.productId === productId && !r.isAdjustment && !r.dealId,
+  );
+  if (matches.length === 0) return undefined;
+  if (sizeName && flavourName) {
+    const exact = matches.find(
+      (r) => r.sizeName === sizeName && (r.flavourName ?? null) === flavourName,
+    );
+    if (exact) return exact;
+  }
+  if (sizeName) {
+    const sizeOnly = matches.find((r) => r.sizeName === sizeName && !(r.flavourName));
+    if (sizeOnly) return sizeOnly;
+    const hasAnySized = matches.some((r) => !!r.sizeName);
+    if (hasAnySized) return undefined;
+  }
+  if (flavourName) {
+    const flavOnly = matches.find(
+      (r) => !(r.sizeName) && (r.flavourName ?? null) === flavourName,
+    );
+    if (flavOnly) return flavOnly;
+  }
+  return matches.find((r) => !r.sizeName && !r.flavourName) ?? matches[0];
+}
+
+/** Collect adjustment recipes that match selected modifier option IDs. */
+function adjustmentRecipesFor(
+  state: AppState,
+  productId: string,
+  selectedOptionIds: string[],
+): Recipe[] {
+  if (!selectedOptionIds.length) return [];
+  return state.recipes.filter((r) => {
+    if (!r.active || !r.isAdjustment || r.productId !== productId) return false;
+    const required = r.requiredModifierOptionIds ?? [];
+    if (!required.length) return false;
+    return required.every((id) => selectedOptionIds.includes(id));
+  });
 }
 
 interface PlannedMove {
@@ -308,6 +495,112 @@ function pushAddonMoves(state: AppState, product: Product | undefined, addonIds:
   }
 }
 
+/** Collect selected modifier option IDs from a line config. */
+function selectedModifierOptionIds(config: LineConfig): string[] {
+  const ids: string[] = [];
+  for (const sel of config.modifierSelections ?? []) {
+    ids.push(...sel.optionIds);
+  }
+  return ids;
+}
+
+/**
+ * Apply ingredient additions / removals coming from selected modifier options
+ * and from legacy addons that carry ingredientId + extraQty.
+ */
+function pushModifierAndAddonMoves(
+  state: AppState,
+  product: Product | undefined,
+  config: LineConfig,
+  times: number,
+  into: PlannedMove[],
+) {
+  if (!product) return;
+  pushAddonMoves(state, product, config.addonIds, times, into);
+  const optionIds = selectedModifierOptionIds(config);
+  if (!optionIds.length) return;
+  for (const group of product.modifierGroups ?? []) {
+    for (const opt of group.options) {
+      if (!optionIds.includes(opt.id)) continue;
+      if (opt.ingredientId && opt.ingredientQty) {
+        const ingredient = state.ingredients.find((i) => i.id === opt.ingredientId);
+        if (!ingredient) continue;
+        const qty = -roundQty(opt.ingredientQty * times);
+        const unit = ingredient.avgCostPaisa;
+        into.push({
+          ingredientId: ingredient.id,
+          productId: null,
+          qty,
+          unitCostPaisa: unit,
+          totalCostPaisa: Math.round(Math.abs(qty) * unit),
+        });
+      }
+    }
+  }
+  for (const adj of adjustmentRecipesFor(state, product.id, optionIds)) {
+    pushRecipeMoves(state, adj, times, into);
+  }
+}
+
+/**
+ * Resolve and apply recipes for a single product line, correctly handling
+ * half-and-half flavour splitting and size / flavour specificity.
+ */
+function consumeProductLine(
+  state: AppState,
+  product: Product | undefined,
+  config: LineConfig,
+  times: number,
+  into: PlannedMove[],
+): boolean {
+  if (!product) return false;
+  const sizeName = config.sizeName ?? null;
+  const flavours = config.flavours ?? [];
+  let covered = false;
+
+  if (flavours.length === 2 && product.halfAndHalf) {
+    const base = recipeForProduct(state, product.id, sizeName, null);
+    if (base) {
+      pushRecipeMoves(state, base, times, into);
+      covered = true;
+    }
+    for (const flavour of flavours) {
+      const flavRecipe = recipeForProduct(state, product.id, sizeName, flavour);
+      if (flavRecipe && flavRecipe !== base) {
+        pushRecipeMoves(state, flavRecipe, times * 0.5, into);
+        covered = true;
+      }
+    }
+  } else if (flavours.length === 1) {
+    const recipe = recipeForProduct(state, product.id, sizeName, flavours[0]);
+    if (recipe) {
+      pushRecipeMoves(state, recipe, times, into);
+      covered = true;
+    }
+  } else {
+    const recipe = recipeForProduct(state, product.id, sizeName, null);
+    if (recipe) {
+      pushRecipeMoves(state, recipe, times, into);
+      covered = true;
+    }
+  }
+
+  pushModifierAndAddonMoves(state, product, config, times, into);
+
+  if (!covered && product.trackStock) {
+    const unit = product.costPricePaisa ?? 0;
+    into.push({
+      ingredientId: null,
+      productId: product.id,
+      qty: -times,
+      unitCostPaisa: unit,
+      totalCostPaisa: unit * times,
+    });
+    covered = true;
+  }
+  return covered;
+}
+
 function planConsumption(state: AppState, lines: PricedLine[]): { moves: PlannedMove[]; cogs: number; partial: boolean } {
   const moves: PlannedMove[] = [];
   let cogs = 0;
@@ -315,10 +608,9 @@ function planConsumption(state: AppState, lines: PricedLine[]): { moves: Planned
   for (const priced of lines) {
     const times = priced.line.qty;
     if (priced.line.kind === "deal") {
-      const recipe = state.recipes.find((item) => item.active && item.dealId === priced.line.refId);
+      const recipe = state.recipes.find((item) => item.active && item.dealId === priced.line.refId && !item.isAdjustment);
       if (recipe) {
         pushRecipeMoves(state, recipe, times, moves);
-        // Deal-level extra toppings still deduct when linked to a product addon definition
         for (const addonId of priced.line.config.addonIds ?? []) {
           for (const product of state.products) {
             if (product.addons.some((a) => a.id === addonId && a.ingredientId && a.extraQty)) {
@@ -332,68 +624,59 @@ function planConsumption(state: AppState, lines: PricedLine[]): { moves: Planned
       let covered = false;
       for (const pick of priced.line.config.picks ?? []) {
         const product = productById(state, pick.productId);
-        const recipeForPick = recipeForProduct(state, pick.productId, pick.sizeName);
         const portion = times * Math.max(1, pick.qty);
-        if (recipeForPick) {
-          pushRecipeMoves(state, recipeForPick, portion, moves);
-          covered = true;
-        } else if (product?.trackStock) {
-          const unit = product.costPricePaisa ?? 0;
-          if (product.costPricePaisa === null) partial = true;
-          moves.push({
-            ingredientId: null,
-            productId: product.id,
-            qty: -portion,
-            unitCostPaisa: unit,
-            totalCostPaisa: unit * portion,
-          });
-          covered = true;
-        }
-        pushAddonMoves(state, product, priced.line.config.addonIds, portion, moves);
+        const pickConfig: LineConfig = {
+          sizeName: pick.sizeName ?? undefined,
+          flavours: pick.flavour ? [pick.flavour] : undefined,
+          addonIds: priced.line.config.addonIds,
+          modifierSelections: priced.line.config.modifierSelections,
+        };
+        if (consumeProductLine(state, product, pickConfig, portion, moves)) covered = true;
       }
       if (!covered) partial = true;
       continue;
     }
     const product = productById(state, priced.line.refId);
-    const recipe = recipeForProduct(state, priced.line.refId, priced.line.config.sizeName ?? null);
-    if (recipe) {
-      pushRecipeMoves(state, recipe, times, moves);
-      pushAddonMoves(state, product, priced.line.config.addonIds, times, moves);
-      continue;
-    }
-    if (product?.trackStock) {
-      const unit = product.costPricePaisa ?? 0;
-      if (product.costPricePaisa === null) partial = true;
-      moves.push({
-        ingredientId: null,
-        productId: product.id,
-        qty: -times,
-        unitCostPaisa: unit,
-        totalCostPaisa: unit * times,
-      });
-      pushAddonMoves(state, product, priced.line.config.addonIds, times, moves);
-      continue;
-    }
-    pushAddonMoves(state, product, priced.line.config.addonIds, times, moves);
-    if (!(priced.line.config.addonIds?.length)) partial = true;
+    const covered = consumeProductLine(state, product, priced.line.config, times, moves);
+    if (!covered) partial = true;
   }
-  for (const move of moves) cogs += move.totalCostPaisa;
-  return { moves, cogs, partial };
+  const aggregated = new Map<string, PlannedMove>();
+  for (const move of moves) {
+    const key = `${move.ingredientId ?? ""}|${move.productId ?? ""}|${move.unitCostPaisa}`;
+    const existing = aggregated.get(key);
+    if (existing) {
+      existing.qty = roundQty(existing.qty + move.qty);
+      existing.totalCostPaisa += move.totalCostPaisa;
+    } else {
+      aggregated.set(key, { ...move });
+    }
+  }
+  const finalMoves = [...aggregated.values()];
+  for (const move of finalMoves) cogs += move.totalCostPaisa;
+  return { moves: finalMoves, cogs, partial };
 }
-
 function applyMove(state: AppState, move: Omit<StockMovement, "id">) {
   state.stockMovements.push({ ...move, id: uid() });
   if (move.ingredientId) {
     const ingredient = state.ingredients.find((item) => item.id === move.ingredientId);
     if (!ingredient) return;
     if (move.type === "purchase" && move.qty > 0) {
+      // Weighted average costing — keep fractional precision (e.g. 4.5 paisa/g).
+      // newAvg = (max(existingQty,0) * avgCost + purchaseValue) / (max(existingQty,0) + purchaseQty)
+      // Negative stock treated as zero quantity for the value pool.
+      // Old integer avgCostPaisa values remain valid (backward compatible).
       const baseQty = Math.max(ingredient.stockQty, 0);
-      const nextQty = roundQty(ingredient.stockQty + move.qty);
-      ingredient.avgCostPaisa =
-        nextQty > 0 ? Math.round((baseQty * ingredient.avgCostPaisa + move.totalCostPaisa) / nextQty) : ingredient.avgCostPaisa;
+      const purchaseQty = move.qty;
+      const nextQty = roundQty(ingredient.stockQty + purchaseQty);
+      const valuePool = baseQty * ingredient.avgCostPaisa + move.totalCostPaisa;
+      const denom = baseQty + purchaseQty;
+      if (denom > 0) {
+        ingredient.avgCostPaisa = valuePool / denom;
+      }
       ingredient.stockQty = nextQty;
       return;
     }
+    // Wastage, sale, adjustment, return: quantity changes, average cost is preserved.
     ingredient.stockQty = roundQty(ingredient.stockQty + move.qty);
   }
   if (move.productId) {
@@ -485,14 +768,22 @@ export function checkout(state: AppState, input: CheckoutInput): Result<{ orderI
   next.meta.nextOrder += 1;
   let customerId = next.cart.customerId;
   if (!customerId && next.cart.customerName.trim()) {
+    const name = next.cart.customerName.trim();
     const phone = next.cart.phone.trim();
-    const found = phone ? next.customers.find((customer) => customer.phone === phone) : undefined;
-    if (found) customerId = found.id;
-    else {
+    // Exact identity: normalized name + normalized phone. Never merge on phone alone.
+    const found = findCustomerByIdentity(next.customers, name, phone);
+    if (found) {
+      customerId = found.id;
+      // Optionally refresh address if the cart has a newer one and existing is empty
+      if (next.cart.address.trim() && !found.address.trim()) {
+        const idx = next.customers.findIndex((c) => c.id === found.id);
+        if (idx >= 0) next.customers[idx] = { ...found, address: next.cart.address.trim() };
+      }
+    } else {
       customerId = uid();
       next.customers.push({
         id: customerId,
-        name: next.cart.customerName.trim(),
+        name,
         phone,
         address: next.cart.address.trim(),
         notes: "",
@@ -684,26 +975,43 @@ export function saveProduct(state: AppState, product: Product, actor: string): R
     const error = assertPaisa(addon.pricePaisa, addon.name);
     if (error) return fail(error);
   }
-  if (product.type === "pizza" && product.sizes.length === 0) return fail("Add at least one pizza size.");
+  // Any product may have sizes / options / addons — not pizza-only.
+  // If sizes are listed, at least one is required; otherwise a plain selling price is fine.
+  if (product.sizes.length === 0 && product.basePricePaisa === 0) {
+    return fail("Set a selling price, or add at least one size/variant with a price.");
+  }
   const next = structuredClone(state);
   const id = product.id || uid();
-  const sku = product.sku.trim() || `PP-${id.slice(0, 6).toUpperCase()}`;
+  const sku = product.sku.trim() || `IT-${id.slice(0, 6).toUpperCase()}`;
   if (skuTaken(next, sku, id)) return fail("That item code is already used.");
   const duplicate = next.products.find(
     (item) => item.id !== id && item.categoryId === product.categoryId && item.name.trim().toLowerCase() === name.toLowerCase(),
   );
   if (duplicate) return fail("An item in this category already uses that name.");
+  for (const group of product.modifierGroups ?? []) {
+    if (!group.name.trim()) return fail("Every customization group needs a name.");
+    if (group.minSelections < 0 || group.maxSelections < group.minSelections) {
+      return fail(`Invalid selection limits on group "${group.name}".`);
+    }
+    for (const opt of group.options) {
+      if (!opt.name.trim()) return fail(`Every option in "${group.name}" needs a name.`);
+      const err = assertPaisa(opt.pricePaisa, opt.name);
+      if (err) return fail(err);
+    }
+  }
   const saved: Product = {
     ...product,
     id,
     name,
     sku,
     description: product.description.trim(),
-    sizes: product.type === "pizza" || product.sizes.length ? product.sizes : [],
-    flavours: product.type === "pizza" ? product.flavours : [],
-    halfAndHalf: product.type === "pizza" ? product.halfAndHalf : false,
-    addons: product.type === "pizza" || product.type === "extra" ? product.addons : product.addons,
+    sizes: product.sizes,
+    flavours: product.flavours,
+    halfAndHalf: product.halfAndHalf && product.flavours.length > 0,
+    addons: product.addons,
+    modifierGroups: product.modifierGroups ?? [],
     stockQty: product.trackStock ? product.stockQty : 0,
+    prepNotes: product.prepNotes?.trim() || undefined,
   };
   const index = next.products.findIndex((item) => item.id === id);
   if (index >= 0) {
@@ -770,6 +1078,50 @@ export function removeProduct(state: AppState, id: string, actor: string): Resul
   return { ok: true, state: next, value: { archived: false } };
 }
 
+/** Create or update a menu category. Kind drives POS tab grouping. */
+export function saveCategory(
+  state: AppState,
+  input: { id?: string; name: string; kind: import("./types.ts").CategoryKind; sort?: number; active?: boolean },
+  actor: string,
+): Result<string> {
+  const name = (input.name ?? "").trim();
+  if (name.length < 2) return fail("Category name must be at least 2 characters.");
+  const kind = input.kind || "other";
+  const next = structuredClone(state);
+  const id = input.id?.trim() || uid();
+  const existing = next.categories.find((c) => c.id === id);
+  if (existing) {
+    existing.name = name;
+    existing.kind = kind;
+    if (input.sort !== undefined) existing.sort = input.sort;
+    if (input.active !== undefined) existing.active = input.active;
+    audit(next, actor, "edit-category", name);
+  } else {
+    if (next.categories.some((c) => c.name.trim().toLowerCase() === name.toLowerCase())) {
+      return fail("A category with that name already exists.");
+    }
+    next.categories.push({
+      id,
+      name,
+      kind,
+      sort: input.sort ?? next.categories.length + 1,
+      active: input.active ?? true,
+    });
+    audit(next, actor, "add-category", name);
+  }
+  return { ok: true, state: next, value: id };
+}
+
+/** Soft-hide a category (does not delete products). */
+export function archiveCategory(state: AppState, id: string, actor: string): Result<string> {
+  const next = structuredClone(state);
+  const cat = next.categories.find((c) => c.id === id);
+  if (!cat) return fail("Category not found.");
+  cat.active = false;
+  audit(next, actor, "archive-category", cat.name);
+  return { ok: true, state: next, value: id };
+}
+
 export function saveDeal(state: AppState, deal: Deal, actor: string): Result<string> {
   const title = deal.title.trim();
   if (title.length < 2) return fail("Give the deal a title.");
@@ -821,10 +1173,21 @@ export function saveCustomer(state: AppState, customer: Customer, actor: string)
   if (name.length < 2) return fail("Customer name is required.");
   const next = structuredClone(state);
   const id = customer.id || uid();
-  if (customer.phone.trim()) {
-    const clash = next.customers.find((item) => item.id !== id && item.phone.trim() === customer.phone.trim());
-    if (clash) return fail("That phone number is already on another customer.");
+  const nName = normalizeName(name);
+  const nPhone = normalizePhone(customer.phone);
+  // Conflict only when both name and phone match another record (exact identity).
+  // Same phone with a different name is allowed — they are different people.
+  if (nName && nPhone) {
+    const clash = next.customers.find(
+      (item) =>
+        item.id !== id &&
+        normalizeName(item.name) === nName &&
+        normalizePhone(item.phone) === nPhone,
+    );
+    if (clash) return fail("A customer with that exact name and phone already exists.");
   }
+  // Strip any manually forced VIP tag — VIP is derived from completed order count only.
+  const manualTags = (customer.manualTags ?? []).filter((t) => t.toUpperCase() !== "VIP");
   const saved: Customer = {
     ...customer,
     id,
@@ -832,6 +1195,7 @@ export function saveCustomer(state: AppState, customer: Customer, actor: string)
     phone: customer.phone.trim(),
     address: customer.address.trim(),
     notes: customer.notes.trim(),
+    manualTags,
     createdAt: customer.createdAt || new Date().toISOString(),
   };
   const index = next.customers.findIndex((item) => item.id === id);
@@ -841,10 +1205,19 @@ export function saveCustomer(state: AppState, customer: Customer, actor: string)
   return { ok: true, state: next, value: id };
 }
 
+/** True when the customer has at least VIP_ORDER_THRESHOLD completed (non-cancelled) orders. */
+export function isVipCustomer(state: AppState, customerId: string | null | undefined): boolean {
+  if (!customerId) return false;
+  const completed = state.orders.filter(
+    (order) => order.status === "completed" && order.customerId === customerId,
+  ).length;
+  return completed >= VIP_ORDER_THRESHOLD;
+}
+
 export function customerStats(state: AppState, customerId: string, now = new Date()) {
   const settings = state.settings;
   const orders = state.orders.filter((order) => order.status === "completed" && order.customerId === customerId);
-  const days = new Set(orders.map((order) => localDate(order.createdAt)));
+  const days = new Set(orders.map((order) => businessDate(order.createdAt)));
   const spend = orders.reduce((sum, order) => sum + order.subtotalPaisa - order.discountPaisa, 0);
   const sorted = [...orders].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const first = sorted[0]?.createdAt ?? null;
@@ -852,7 +1225,7 @@ export function customerStats(state: AppState, customerId: string, now = new Dat
   const windowStart = new Date(now);
   windowStart.setDate(windowStart.getDate() - settings.tagFrequentDays);
   const recentDays = new Set(
-    orders.filter((order) => new Date(order.createdAt) >= windowStart).map((order) => localDate(order.createdAt)),
+    orders.filter((order) => new Date(order.createdAt) >= windowStart).map((order) => businessDate(order.createdAt)),
   );
   const counts = new Map<string, number>();
   for (const order of orders) {
@@ -860,8 +1233,9 @@ export function customerStats(state: AppState, customerId: string, now = new Dat
   }
   const favourite = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
   const customer = state.customers.find((item) => item.id === customerId);
-  const tags = new Set(customer?.manualTags ?? []);
-  if (spend >= settings.tagVipSpendPaisa || orders.length >= settings.tagVipVisits) tags.add("VIP");
+  const tags = new Set((customer?.manualTags ?? []).filter((t) => t.toUpperCase() !== "VIP"));
+  // VIP is strictly derived from completed order count (4+). Not spend, not manual tags.
+  if (orders.length >= VIP_ORDER_THRESHOLD) tags.add("VIP");
   if (recentDays.size >= settings.tagFrequentMinDays) tags.add("Frequent");
   const inactiveCutoff = new Date(now);
   inactiveCutoff.setDate(inactiveCutoff.getDate() - settings.tagInactiveDays);
@@ -1025,9 +1399,26 @@ export function saveIngredient(state: AppState, ingredient: Ingredient, actor: s
   const name = ingredient.name.trim();
   if (name.length < 2) return fail("Ingredient name is required.");
   if (!ingredient.unit.trim()) return fail("Add a unit, such as g or pcs.");
+  if (ingredient.conversionFactor !== undefined && ingredient.conversionFactor <= 0) {
+    return fail("Conversion factor must be greater than zero.");
+  }
   const next = structuredClone(state);
   const id = ingredient.id || uid();
-  const saved: Ingredient = { ...ingredient, id, name, unit: ingredient.unit.trim(), stockQty: roundQty(ingredient.stockQty) };
+  const saved: Ingredient = {
+    ...ingredient,
+    id,
+    name,
+    unit: ingredient.unit.trim(),
+    purchaseUnit: ingredient.purchaseUnit?.trim() || undefined,
+    conversionFactor: ingredient.conversionFactor,
+    category: ingredient.category,
+    kind: ingredient.kind || "ingredient",
+    sku: ingredient.sku?.trim() || undefined,
+    notes: ingredient.notes?.trim() || undefined,
+    stockQty: roundQty(ingredient.stockQty),
+    reorderLevel: ingredient.reorderLevel,
+    productionRecipeId: ingredient.productionRecipeId ?? null,
+  };
   const index = next.ingredients.findIndex((item) => item.id === id);
   if (index >= 0) {
     saved.stockQty = next.ingredients[index]!.stockQty;
@@ -1061,11 +1452,6 @@ export function removeIngredient(state: AppState, id: string, actor: string): Re
   return { ok: true, state: next, value: { archived: false } };
 }
 
-/**
- * Stock in/out. `qty` is always in the ingredient's stored unit (e.g. grams).
- * For purchases, `unitCostPaisa` is cost per 1 stored unit (not per kg if stock is grams).
- * UI should convert: totalPaid / convertedQty → unitCostPaisa.
- */
 export function postStock(
   state: AppState,
   input: {
@@ -1073,8 +1459,9 @@ export function postStock(
     type: "purchase" | "out" | "wastage" | "adjustment";
     qty: number;
     adjustmentIn: boolean;
-    /** Cost of ONE stored unit (paisa). For 5 kg @ Rs 5000 with unit g → 5000*100/5000 = 100 paisa/g */
     unitCostPaisa: number;
+    /** Exact total paid for this purchase (paisa). Preferred over qty * unitCost to avoid rounding drift. */
+    totalCostPaisa?: number;
     reason: string;
     partyId: string | null;
     method: StockMovement["method"];
@@ -1086,17 +1473,50 @@ export function postStock(
   if (input.reason.trim().length < 3) return fail("A reason is required for every stock change.");
   const at = dateAtNoon(input.day);
   if (!at) return fail("That date is not valid.");
-  const costError = assertPaisa(input.unitCostPaisa, "Unit cost");
-  if (input.type === "purchase" && (costError || input.unitCostPaisa === 0)) return fail(costError ?? "Enter the purchase cost (total paid for this quantity).");
-  if (costError && input.type !== "purchase") return fail(costError);
+
   const next = structuredClone(state);
+  if (!input.ingredientId || !input.ingredientId.trim()) {
+    return fail("Select an ingredient before saving stock.");
+  }
   const ingredient = next.ingredients.find((item) => item.id === input.ingredientId);
-  if (!ingredient) return fail("Ingredient not found.");
+  if (!ingredient) {
+    return fail("Ingredient not found. It may have been removed — refresh the list and pick an active ingredient.");
+  }
+  if (!ingredient.active) {
+    return fail(`${ingredient.name} is archived. Restore it before adding stock.`);
+  }
   let qty = roundQty(input.qty);
   let type: StockMovement["type"] = input.type;
   if (input.type === "out" || input.type === "wastage") qty = -qty;
   if (input.type === "adjustment") qty = input.adjustmentIn ? qty : -qty;
-  const total = Math.round(Math.abs(qty) * (input.type === "purchase" ? input.unitCostPaisa : ingredient.avgCostPaisa));
+
+  // Purchase total: prefer exact totalCostPaisa from the UI (what was actually paid).
+  // Never recompute total as round(unitCost) * qty — that drifts (e.g. Rs 225 → Rs 250).
+  let total: number;
+  let unitCost: number;
+  if (input.type === "purchase") {
+    if (input.totalCostPaisa !== undefined && input.totalCostPaisa !== null) {
+      const totalError = assertPaisa(input.totalCostPaisa, "Total paid");
+      if (totalError) return fail(totalError);
+      if (input.totalCostPaisa <= 0) return fail("Enter the total amount paid.");
+      total = input.totalCostPaisa;
+      unitCost = total / Math.abs(qty);
+    } else {
+      const costError = assertPaisa(input.unitCostPaisa, "Unit cost");
+      if (costError || input.unitCostPaisa === 0) return fail(costError ?? "Enter the unit cost.");
+      unitCost = input.unitCostPaisa;
+      total = Math.round(Math.abs(qty) * unitCost);
+    }
+    if (unitCost > 10_000_000) {
+      return fail("Unit cost looks too high. Enter total paid for the whole quantity, not a per-gram price in the wrong unit.");
+    }
+    if (total > 500_000_000) {
+      return fail("Purchase total exceeds Rs 50,00,000 — check quantity units (kg vs g) and amount.");
+    }
+  } else {
+    unitCost = ingredient.avgCostPaisa;
+    total = Math.round(Math.abs(qty) * unitCost);
+  }
   if (qty < 0 && next.settings.blockNegativeStock && ingredient.stockQty + qty < -0.0001) {
     return fail(`${ingredient.name} would go below zero.`);
   }
@@ -1124,7 +1544,7 @@ export function postStock(
     productId: null,
     type,
     qty,
-    unitCostPaisa: input.type === "purchase" ? input.unitCostPaisa : ingredient.avgCostPaisa,
+    unitCostPaisa: unitCost,
     totalCostPaisa: input.type === "purchase" ? total : 0,
     method: input.method,
     partyId: input.partyId,
@@ -1141,13 +1561,17 @@ export function saveRecipe(state: AppState, recipe: Recipe, actor: string): Resu
   if (recipe.lines.length === 0) return fail("Add at least one ingredient.");
   for (const line of recipe.lines) {
     if (!state.ingredients.some((item) => item.id === line.ingredientId)) return fail("An ingredient on this recipe was removed.");
-    if (!(line.qty > 0)) return fail("Recipe quantities must be greater than zero.");
+    if (!recipe.isAdjustment && !(line.qty > 0)) return fail("Recipe quantities must be greater than zero.");
+    if (recipe.isAdjustment && line.qty === 0) return fail("Adjustment quantity cannot be zero.");
   }
   const next = structuredClone(state);
   const id = recipe.id || uid();
   const saved: Recipe = {
     ...recipe,
     id,
+    flavourName: recipe.flavourName ?? null,
+    requiredModifierOptionIds: recipe.requiredModifierOptionIds ?? [],
+    isAdjustment: !!recipe.isAdjustment,
     lines: recipe.lines.map((line) => ({ ...line, qty: roundQty(line.qty) })),
     note: recipe.note.trim(),
   };
@@ -1156,6 +1580,191 @@ export function saveRecipe(state: AppState, recipe: Recipe, actor: string): Resu
   else next.recipes.push(saved);
   audit(next, actor, "recipe", id);
   return { ok: true, state: next, value: id };
+}
+
+/* ------------------------------------------------------------------ */
+/*  PREPARED INGREDIENT PRODUCTION BATCHES                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Preview what a production batch would consume and cost.
+ * Does not mutate state.
+ */
+export function previewProduction(
+  state: AppState,
+  preparedIngredientId: string,
+  quantity: number,
+): { ok: true; lines: { ingredientId: string; name: string; qty: number; unit: string; costPaisa: number }[]; totalCostPaisa: number; missing: string[] } | { ok: false; error: string } {
+  if (!(quantity > 0)) return { ok: false, error: "Production quantity must be greater than zero." };
+  const prepared = state.ingredients.find((i) => i.id === preparedIngredientId);
+  if (!prepared) return { ok: false, error: "Prepared ingredient not found." };
+  if (prepared.kind !== "prepared") return { ok: false, error: "Only prepared ingredients can be produced in batches." };
+  const recipeId = prepared.productionRecipeId;
+  if (!recipeId) return { ok: false, error: "This prepared item has no production recipe assigned." };
+  const recipe = state.recipes.find((r) => r.id === recipeId && r.active);
+  if (!recipe) return { ok: false, error: "Production recipe is missing or inactive." };
+  // Detect circular dependency: prepared item appears in its own recipe
+  if (recipe.lines.some((l) => l.ingredientId === preparedIngredientId)) {
+    return { ok: false, error: "Circular recipe: prepared item cannot consume itself." };
+  }
+  const lines: { ingredientId: string; name: string; qty: number; unit: string; costPaisa: number }[] = [];
+  const missing: string[] = [];
+  let totalCost = 0;
+  for (const line of recipe.lines) {
+    const ing = state.ingredients.find((i) => i.id === line.ingredientId);
+    if (!ing) {
+      missing.push(line.ingredientId);
+      continue;
+    }
+    const qty = roundQty(line.qty * quantity);
+    const cost = Math.round(qty * ing.avgCostPaisa);
+    lines.push({ ingredientId: ing.id, name: ing.name, qty, unit: ing.unit, costPaisa: cost });
+    totalCost += cost;
+    if (ing.stockQty + 0.0001 < qty) {
+      missing.push(`${ing.name} (need ${qty} ${ing.unit}, have ${ing.stockQty})`);
+    }
+  }
+  return { ok: true, lines, totalCostPaisa: totalCost, missing };
+}
+
+/**
+ * Execute a production batch: deduct raw ingredients, increase prepared stock,
+ * record movements and a ProductionBatch record.
+ */
+export function produceBatch(
+  state: AppState,
+  preparedIngredientId: string,
+  quantity: number,
+  notes: string,
+  actor: string,
+): Result<string> {
+  const preview = previewProduction(state, preparedIngredientId, quantity);
+  if (!preview.ok) return fail(preview.error);
+  if (preview.missing.length > 0 && state.settings.blockNegativeStock) {
+    return fail(`Insufficient stock: ${preview.missing.join("; ")}`);
+  }
+  const next = structuredClone(state);
+  if (!Array.isArray(next.productionBatches)) next.productionBatches = [];
+  const prepared = next.ingredients.find((i) => i.id === preparedIngredientId)!;
+  const batchId = uid();
+  const at = new Date().toISOString();
+  const movementIds: string[] = [];
+
+  // Deduct raw ingredients
+  for (const line of preview.lines) {
+    const moveId = uid();
+    movementIds.push(moveId);
+    next.stockMovements.push({
+      id: moveId,
+      at,
+      ingredientId: line.ingredientId,
+      productId: null,
+      type: "production",
+      qty: -line.qty,
+      unitCostPaisa: line.costPaisa / (line.qty || 1),
+      totalCostPaisa: line.costPaisa,
+      method: "none",
+      partyId: null,
+      orderId: null,
+      reason: `Production batch → ${prepared.name}`,
+      productionBatchId: batchId,
+    });
+    const ing = next.ingredients.find((i) => i.id === line.ingredientId)!;
+    ing.stockQty = roundQty(ing.stockQty - line.qty);
+  }
+
+  // Increase prepared stock with weighted average cost
+  const baseQty = Math.max(prepared.stockQty, 0);
+  const addQty = quantity;
+  const valuePool = baseQty * prepared.avgCostPaisa + preview.totalCostPaisa;
+  const denom = baseQty + addQty;
+  if (denom > 0) prepared.avgCostPaisa = valuePool / denom;
+  prepared.stockQty = roundQty(prepared.stockQty + addQty);
+
+  const producedMoveId = uid();
+  movementIds.push(producedMoveId);
+  next.stockMovements.push({
+    id: producedMoveId,
+    at,
+    ingredientId: prepared.id,
+    productId: null,
+    type: "production",
+    qty: addQty,
+    unitCostPaisa: preview.totalCostPaisa / (addQty || 1),
+    totalCostPaisa: preview.totalCostPaisa,
+    method: "none",
+    partyId: null,
+    orderId: null,
+    reason: `Produced ${addQty} ${prepared.unit} of ${prepared.name}`,
+    productionBatchId: batchId,
+  });
+
+  next.productionBatches.push({
+    id: batchId,
+    preparedIngredientId,
+    quantity: addQty,
+    unit: prepared.unit,
+    producedAt: at,
+    producedBy: actor,
+    rawCostPaisa: preview.totalCostPaisa,
+    notes: notes.trim(),
+    movementIds,
+    reversed: false,
+    reversedAt: null,
+    reversedBy: null,
+  });
+  audit(next, actor, "production", `${prepared.name} × ${addQty}`);
+  return { ok: true, state: next, value: batchId };
+}
+
+/**
+ * Reverse a production batch (restore raw ingredients, reduce prepared stock).
+ */
+export function reverseProductionBatch(
+  state: AppState,
+  batchId: string,
+  actor: string,
+): Result<string> {
+  const next = structuredClone(state);
+  if (!Array.isArray(next.productionBatches)) next.productionBatches = [];
+  const batch = next.productionBatches.find((b) => b.id === batchId);
+  if (!batch) return fail("Production batch not found.");
+  if (batch.reversed) return fail("This batch has already been reversed.");
+  const prepared = next.ingredients.find((i) => i.id === batch.preparedIngredientId);
+  if (!prepared) return fail("Prepared ingredient no longer exists.");
+  if (prepared.stockQty + 0.0001 < batch.quantity) {
+    return fail(`Cannot reverse: only ${prepared.stockQty} ${prepared.unit} of ${prepared.name} remains.`);
+  }
+  const at = new Date().toISOString();
+  // Reverse each movement
+  for (const mid of batch.movementIds ?? []) {
+    const orig = next.stockMovements.find((m) => m.id === mid);
+    if (!orig || !orig.ingredientId) continue;
+    const ing = next.ingredients.find((i) => i.id === orig.ingredientId);
+    if (!ing) continue;
+    const revQty = -orig.qty; // opposite of original
+    next.stockMovements.push({
+      id: uid(),
+      at,
+      ingredientId: orig.ingredientId,
+      productId: null,
+      type: "reversal",
+      qty: revQty,
+      unitCostPaisa: orig.unitCostPaisa,
+      totalCostPaisa: orig.totalCostPaisa,
+      method: "none",
+      partyId: null,
+      orderId: null,
+      reason: `Reversal of production batch ${batchId}`,
+      productionBatchId: batchId,
+    });
+    ing.stockQty = roundQty(ing.stockQty + revQty);
+  }
+  batch.reversed = true;
+  batch.reversedAt = at;
+  batch.reversedBy = actor;
+  audit(next, actor, "reverse-production", batchId);
+  return { ok: true, state: next, value: batchId };
 }
 
 export function saveExpense(state: AppState, expense: Expense, actor: string): Result<string> {
